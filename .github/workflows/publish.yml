@@ -1,0 +1,53 @@
+name: Analyze cameras and publish
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '7,27,47 * * * *'
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            .cache
+            web/frames
+            web/data
+            yolo11n.pt
+          key: cameras-${{ github.run_id }}
+          restore-keys: cameras-
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests
+      - run: python -m pipeline.collect --limit 72
+      - uses: actions/cache/save@v4
+        with:
+          path: |
+            .cache
+            web/frames
+            web/data
+            yolo11n.pt
+          key: cameras-${{ github.run_id }}
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - uses: actions/deploy-pages@v4
+        id: deployment
