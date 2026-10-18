@@ -3,3 +3,5 @@ __pycache__/
 .cache/
 *.pt
 .DS_Store
+web/data/*.json
+web/frames/*.jpg
