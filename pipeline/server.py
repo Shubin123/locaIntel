@@ -14,7 +14,13 @@ async def lifespan(app):
     async def poll():
         while True:
             try:
-                await asyncio.to_thread(collect, int(os.getenv('CAMERA_LIMIT', '48')))
+                if os.getenv('VIDEO_SOURCE'):
+                    from .video import run
+                    await asyncio.to_thread(run, os.environ['VIDEO_SOURCE'], os.environ['VIDEO_CAMERA_ID'],
+                                            int(os.getenv('VIDEO_FRAMES', '600')),
+                                            os.getenv('APPEARANCE_MODEL', 'dinov2'))
+                else:
+                    await asyncio.to_thread(collect, int(os.getenv('CAMERA_LIMIT', '48')))
             except Exception:
                 import logging
                 logging.exception('Collection failed; retaining last successful snapshot')

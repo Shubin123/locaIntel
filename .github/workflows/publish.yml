@@ -16,6 +16,9 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     timeout-minutes: 18
+    env:
+      HF_HOME: ${{ github.workspace }}/.cache/huggingface
+      TOKENIZERS_PARALLELISM: 'false'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

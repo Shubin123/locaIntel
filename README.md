@@ -40,3 +40,43 @@ python -m unittest discover -s tests
 Camera catalog: [DriveBC HighwayCams](https://catalogue.data.gov.bc.ca/dataset/bc-highway-cams). Images and data © Province of British Columbia, provided under the [Open Government Licence – BC](https://www2.gov.bc.ca/gov/content/data/open-data/open-government-licence-bc). This independent project is not affiliated with DriveBC.
 
 Source code: AGPL-3.0; Ultralytics dependencies and model licensing also apply. See [Ultralytics licensing](https://www.ultralytics.com/license).
+
+## Motion, road membership, and traffic patterns
+
+The dashboard now combines YOLO11 objects with NVIDIA SegFormer B0 (Cityscapes road segmentation), optical flow, and an explicit **rule-based meta-classifier**. This ensemble has not been trained or probability-calibrated on DriveBC data. It abstains on weak or conflicting evidence. SegFormer is run at 512×512 for CPU inference. A patch just below a vehicle's bounding box supplies road support; segmentation errors and perspective can affect this estimate. Road scores are model scores, not calibrated probabilities. `on_road: null` means unavailable/uncertain, while `false` means road support was low, not proof of illegal/off-road travel.
+
+Individual motion is evaluated only when trusted frame timestamps are at most two seconds apart. Background features validate camera stability; forward/backward Lucas–Kanade optical flow, appearance similarity, detection class and predicted location must agree on an unambiguous match. Camera shifts, duplicate frames, long gaps and weak features yield **unknown**, not stationary. Thresholds use a maximum 640px-wide analysis image. Arrows indicate image-space direction; no metric speed or vehicle identity across sparse snapshots is inferred. A `track_id` is only the previous-frame detection index, not a persistent identity.
+
+Scheduled DriveBC stills are generally too sparse for reliable individual motion. Their published map shows sampled **visible-vehicle density**, with optional road-supported and motion-supported layers. Sparse sampling cannot determine traffic throughput, congestion, turning movements, lane direction, or unique vehicle counts. Camera locations, fields of view and varying observation times bias geographic density; brightness is normalized to the displayed maximum. Gray camera markers remain visible when no vehicles qualify. Model load failures are disclosed and road membership remains unknown.
+
+The per-camera heatmap accumulates vehicle bottom-center positions across up to 48 distinct frames from the past 24 hours and divides by sample count. The hourly chart averages counts per camera first, then weights each observed camera equally. It shows gaps, sample counts and changing camera coverage. History starts when this version first runs; there is no fabricated historical traffic. Each pane and visible camera card has a loaded/updated timestamp and briefly highlights when its relevant content changes, with an accessible announcement and recent update log. Refreshes which return unchanged data do not trigger update notifications.
+
+### Video and Meta DINOv2
+
+Meta's DINOv2-small can provide crop appearance embeddings for short-gap vehicle association. It is used by the video input mode, not falsely applied as a vehicle identity classifier to far-apart webcam stills. Optional histogram mode is lighter but less discriminative. The code was checked with real downloaded DINOv2 embeddings and synthetic short-gap motion tests; this is not field validation of vehicle tracking accuracy.
+
+Run collection once to initialize the catalog, then supply an authorized video that actually corresponds to the selected camera:
+
+```sh
+python -m pipeline.video --source /path/to/camera-video.mp4 --camera-id 864 --frames 120
+# Lighter association, without DINOv2:
+python -m pipeline.video --source /path/to/camera-video.mp4 --camera-id 864 --appearance histogram
+```
+
+Recorded videos use the file's frame rate for motion and are labeled as recorded; displayed observation time is analysis time. Live sources use frame arrival time and abstain when processing gaps exceed two seconds. Recordings are for inspecting motion; do not mix archived recordings into a live traffic deployment. Run a single writer: the video CLI and snapshot collector should not write concurrently. To serve video updates instead of running the snapshot collector in the server:
+
+```sh
+VIDEO_SOURCE=/path/to/camera-video.mp4 VIDEO_CAMERA_ID=864 uvicorn pipeline.server:app --host 0.0.0.0 --port 8000
+```
+
+The server repeats bounded video sessions; recorded files restart between sessions. Models download on first use. GitHub Actions persists Hugging Face models under `.cache/huggingface`. `--road-model none` disables segmentation for a lightweight CLI run. DINOv2 is not downloaded by scheduled snapshot jobs.
+
+Compass direction requires a surveyed per-camera road axis in `calibrations.json`; camera-facing direction alone is insufficient. Keys are camera IDs, for example:
+
+```json
+{"CAMERA_ID": {"road_axis": [[0.5, 0.9], [0.5, 0.1]], "away_bearing": 90}}
+```
+
+These illustrative coordinates must be replaced with measured geometry. `road_axis` runs from the near-road point to the far-road point in normalized image coordinates; `away_bearing` is that road direction's compass bearing in degrees clockwise from north. Opposing motion is assigned the reciprocal bearing. Curves, multiple roads, ramps, and cameras that change view need richer calibration; leave them uncalibrated. No production calibrations are supplied.
+
+Model and map sources: [Meta DINOv2](https://github.com/facebookresearch/dinov2), [SegFormer model and license](https://huggingface.co/nvidia/segformer-b0-finetuned-cityscapes-1024-1024), [OpenCV optical flow](https://docs.opencv.org/4.x/dc/d6b/group__video__track.html), [Leaflet](https://leafletjs.com/), and [OpenStreetMap contributors](https://www.openstreetmap.org/copyright). Vendored map library licenses are in `web/vendor/`. Model-specific license terms apply independently of this repository's source license.

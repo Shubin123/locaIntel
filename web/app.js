@@ -1,11 +1,254 @@
-const $=id=>document.getElementById(id);let data=null,limit=24;const vehicleLabels=['car','truck','bus','motorcycle','bicycle'];
-const count=c=>vehicleLabels.reduce((n,k)=>n+(c.counts?.[k]||0),0);
-function node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n}
-function render(){if(!data)return;let rows=data.cameras.filter(c=>(!$('region').value||c.region===$('region').value)&&`${c.name} ${c.highway} ${c.caption}`.toLowerCase().includes($('search').value.toLowerCase()));rows.sort($('sort').value==='name'?(a,b)=>a.name.localeCompare(b.name):$('sort').value==='fresh'?(a,b)=>Date.parse(b.observed)-Date.parse(a.observed):(a,b)=>count(b)-count(a));$('shown').textContent=`${rows.length} available`;$('feeds').replaceChildren();for(const c of rows.slice(0,limit)){const card=node('article',undefined,'card'),picture=node('div',undefined,'picture'),image=node('img');image.loading='lazy';image.alt=c.caption;image.src=`${c.frame}?v=${c.hash.slice(0,12)}`;image.onerror=()=>{image.alt='Cached image unavailable';};picture.append(image,node('span',`HWY ${c.highway}`,'tag'));if($('boxes').checked){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 1000 1000');svg.setAttribute('preserveAspectRatio','none');for(const d of c.detections||[]){const [x,y,x2,y2]=d.box,r=document.createElementNS(svg.namespaceURI,'rect');for(const [k,v]of Object.entries({x:x*1000,y:y*1000,width:(x2-x)*1000,height:(y2-y)*1000,fill:'none',stroke:'#b8ed86','stroke-width':2}))r.setAttribute(k,v);const title=document.createElementNS(svg.namespaceURI,'title');title.textContent=`${d.label} ${Math.round(d.confidence*100)}%`;r.append(title);svg.append(r)}picture.append(svg)}const details=node('div',undefined,'details'),link=node('a',c.name);link.href=c.source;link.target='_blank';link.rel='noreferrer';const h=node('h3');h.append(link);details.append(h);const meta=node('div',undefined,'meta');meta.append(node('span',c.region),node('span',`${count(c)} vehicles visible`));details.append(meta);const counts=node('div',undefined,'counts');for(const [label,n]of Object.entries(c.counts||{}))counts.append(node('span',`${n} ${label}`));if(!counts.childNodes.length)counts.append(node('span','No objects detected'));details.append(counts);const sources=node('div',undefined,'camera-sources');for(const [text,url] of [['DriveBC camera',c.source],['Original image',c.image],['Cached frame',c.frame]]){const a=node('a',text+' ↗');a.href=url;a.target='_blank';a.rel='noreferrer';sources.append(a)}details.append(sources);const minutes=Math.max(0,Math.floor((Date.now()-Date.parse(c.observed))/60000));details.append(node('div',`${c.error?'Fetch failed · ':''}Observed ${minutes<60?minutes+'m':Math.floor(minutes/60)+'h'} ago${minutes>60?' · stale':''}`,'age'+(minutes>60?' stale':'')));card.append(picture,details);$('feeds').append(card)}$('more').hidden=rows.length<=limit;$('message').textContent=rows.length?'Cached frame counts • Select a camera name to open DriveBC.':'No matching analyzed cameras. Try another region or search.'}
-function apply(payload){data=payload;$('catalog').textContent=data.catalog_size.toLocaleString();$('analyzed').textContent=data.cameras.length.toLocaleString();$('vehicles').textContent=data.cameras.reduce((n,c)=>n+count(c),0).toLocaleString();$('status').textContent=`Cache published ${new Date(data.generated).toLocaleString()}${data.errors?.length?' · '+data.errors.length+' fetch errors':''}`;const selected=$('region').value;$('region').replaceChildren(new Option('All of British Columbia',''));for(const r of [...new Set(data.cameras.map(c=>c.region))].sort())$('region').add(new Option(r,r));$('region').value=selected;render()}
-let refreshing=false;
-async function refresh(){if(refreshing)return;refreshing=true;const button=$('refresh');button.disabled=true;button.textContent='↻ Refreshing…';button.setAttribute('aria-busy','true');$('refresh-result').textContent='Checking for the latest published analysis…';try{const previous=data?.generated;const r=await fetch(`data/latest.json?t=${Date.now()}`,{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);apply(await r.json());$('refresh-result').textContent=(previous===data.generated?'Already showing the latest published analysis.':'Latest published analysis loaded.')+' Checked '+new Date().toLocaleTimeString()+'.'}catch(e){$('refresh-result').textContent='Refresh failed. Try again shortly.';if(!data){$('status').textContent='Snapshot cache unavailable';$('message').textContent='The analysis workflow has not published a snapshot yet, or the network is unavailable.'}else{$('refresh-result').textContent+=' Keeping the last loaded analysis.'}}finally{refreshing=false;button.disabled=false;button.textContent='↻ Refresh data';button.removeAttribute('aria-busy')}}
-
-for(const id of ['search','region','sort','boxes'])$(id).addEventListener('input',()=>{limit=24;render()});$('refresh').onclick=refresh;$('more').onclick=()=>{limit+=24;render()};refresh();setInterval(refresh,60000);
-// A local/hosted Python server adds SSE; GitHub Pages uses static polling.
-if(!location.hostname.endsWith('github.io')){const stream=new EventSource('api/events');stream.onmessage=e=>{const p=JSON.parse(e.data);if(p.cameras)apply(p)};stream.onerror=()=>stream.close()}
+const $ = id => document.getElementById(id);
+const vehicleLabels = ['car', 'truck', 'bus', 'motorcycle', 'bicycle'];
+const count = c => vehicleLabels.reduce((n, k) => n + (c.counts?.[k] || 0), 0);
+const vehicles = c => (c.detections || []).filter(d => vehicleLabels.includes(d.label));
+const motionState = d => d.motion?.state || 'unknown';
+const signature = value => JSON.stringify(value);
+let data = null, patterns = null, limit = 24, selectedCamera = '', refreshing = false;
+let map = null, heatLayer = null, markerLayer = null;
+const paneVersions = new Map(), updateLog = [];
+let announcementTimer;
+function node(tag, text, cls) {
+  const n = document.createElement(tag);
+  if (text !== undefined) n.textContent = text;
+  if (cls) n.className = cls;
+  return n;
+}
+function link(text, url) {
+  const a = node('a', text); a.href = url; a.target = '_blank'; a.rel = 'noreferrer'; return a;
+}
+function notifyPane(key, label, version, badge, pane, sourceTime) {
+  const serialized = signature(version), prior = paneVersions.get(key);
+  if (prior?.version === serialized) {
+    if (badge) badge.textContent = prior.text;
+    return;
+  }
+  const clock = new Date().toLocaleTimeString();
+  const text = `${prior ? 'Updated' : 'Loaded'} ${clock}`;
+  paneVersions.set(key, { version: serialized, text });
+  if (badge) {
+    badge.textContent = text; badge.title = sourceTime ? `Source published ${new Date(sourceTime).toLocaleString()}` : 'Display last changed at this time';
+    badge.classList.add('fresh'); setTimeout(() => badge.classList.remove('fresh'), 3000);
+  }
+  if (pane && prior) {
+    pane.classList.remove('pane-flash'); void pane.offsetWidth; pane.classList.add('pane-flash');
+  }
+  updateLog.unshift(`${clock} · ${label} ${prior ? 'updated' : 'loaded'}`);
+  updateLog.splice(12);
+  $('update-log').replaceChildren(...updateLog.map(t => node('li', t)));
+  clearTimeout(announcementTimer);
+  announcementTimer = setTimeout(() => { $('pane-announcer').textContent = 'Widget updates: ' + updateLog.slice(0, 6).join('. '); }, 250);
+}
+function filteredCameras() {
+  if (!data) return [];
+  const search = $('search').value.toLowerCase();
+  return data.cameras.filter(c => (!$('region').value || c.region === $('region').value) &&
+    `${c.name} ${c.highway} ${c.caption}`.toLowerCase().includes(search));
+}
+function age(c) {
+  const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(c.observed)) / 60000));
+  return `${minutes < 60 ? minutes + 'm' : Math.floor(minutes / 60) + 'h'} ago${minutes > 60 ? ' · stale' : ''}`;
+}
+function motionCounts(rows) {
+  const states = { moving: 0, stationary: 0, unknown: 0 };
+  for (const c of rows) for (const d of vehicles(c)) states[motionState(d)]++;
+  return states;
+}
+function drawPicture(c, detail = false) {
+  const picture = node('div', undefined, 'picture'), image = node('img');
+  image.loading = detail ? 'eager' : 'lazy'; image.alt = c.caption;
+  image.src = `${c.frame}?v=${c.hash.slice(0, 12)}`;
+  image.onerror = () => { image.alt = 'Cached image unavailable'; };
+  picture.append(image, node('span', `HWY ${c.highway}`, 'tag'));
+  if (detail && ($('heat-overlay').checked || $('road-overlay').checked)) {
+    const canvas = node('canvas'); canvas.width = 640; canvas.height = 400;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      if ($('road-overlay').checked && c.analysis?.road_mask) {
+        const grid = c.analysis.road_mask;
+        for (let y = 0; y < grid.length; y++) for (let x = 0; x < grid[y].length; x++) {
+          if (grid[y][x] < .6) continue;
+          ctx.fillStyle = `rgba(72,180,244,${grid[y][x] * .4})`;
+          ctx.fillRect(x * 640 / grid[y].length, y * 400 / grid.length, 640 / grid[y].length + 1, 400 / grid.length + 1);
+        }
+      }
+      if ($('heat-overlay').checked) {
+        const grid = patterns?.cameras?.[c.id]?.occupancy_grid || c.analysis?.occupancy_grid;
+        const max = grid ? Math.max(...grid.flat(), .001) : 1;
+        if (grid) for (let y = 0; y < grid.length; y++) for (let x = 0; x < grid[y].length; x++) {
+          if (!grid[y][x]) continue;
+          const px = (x + .5) * 640 / grid[y].length, py = (y + .5) * 400 / grid.length;
+          const gradient = ctx.createRadialGradient(px, py, 1, px, py, 28);
+          gradient.addColorStop(0, `rgba(255,105,45,${Math.min(.75, grid[y][x] / max * .75)})`);
+          gradient.addColorStop(.5, 'rgba(248,218,87,.25)'); gradient.addColorStop(1, 'rgba(248,218,87,0)');
+          ctx.fillStyle = gradient; ctx.fillRect(px - 28, py - 28, 56, 56);
+        }
+      }
+    }
+    picture.append(canvas);
+  }
+  if ($('boxes').checked || detail) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 1000 1000'); svg.setAttribute('preserveAspectRatio', 'none');
+    for (const [i, d] of (c.detections || []).entries()) {
+      const [x, y, xx, yy] = d.box, state = motionState(d);
+      const color = state === 'moving' ? '#b8ed86' : state === 'stationary' ? '#69b9ff' : '#efbd7b';
+      const r = document.createElementNS(svg.namespaceURI, 'rect');
+      for (const [k, v] of Object.entries({ x: x * 1000, y: y * 1000, width: (xx - x) * 1000, height: (yy - y) * 1000, fill: 'none', stroke: color, 'stroke-width': 2 })) r.setAttribute(k, v);
+      const title = document.createElementNS(svg.namespaceURI, 'title');
+      title.textContent = `#${i + 1} ${d.label} ${Math.round(d.confidence * 100)}% · ${state}`; r.append(title); svg.append(r);
+      if (detail) {
+        const label = document.createElementNS(svg.namespaceURI, 'text');
+        label.setAttribute('x', x * 1000); label.setAttribute('y', Math.max(24, y * 1000 - 8));
+        label.setAttribute('fill', color); label.setAttribute('font-size', '27'); label.textContent = `#${i + 1}`; svg.append(label);
+      }
+      if (state === 'moving' && d.motion.vector) {
+        const [vx, vy] = d.motion.vector, length = Math.hypot(vx, vy);
+        if (!length) continue;
+        const cx = (x + xx) * 500, cy = (y + yy) * 500, dx = vx / length * 70, dy = vy / length * 70;
+        const path = document.createElementNS(svg.namespaceURI, 'path');
+        path.setAttribute('d', `M ${cx} ${cy} l ${dx} ${dy} m ${-dx * .25 + dy * .2} ${-dy * .25 - dx * .2} L ${cx + dx} ${cy + dy} l ${-dx * .25 - dy * .2} ${-dy * .25 + dx * .2}`);
+        path.setAttribute('fill', 'none'); path.setAttribute('stroke', color); path.setAttribute('stroke-width', '5'); svg.append(path);
+      }
+    }
+    picture.append(svg);
+  }
+  return picture;
+}
+function selectCamera(id) { selectedCamera = id; $('camera-select').value = id; renderDetail(); }
+function renderDetail() {
+  const c = data?.cameras.find(c => c.id === selectedCamera);
+  if (!c) { $('detail-title').textContent = 'Select a camera'; $('detail-caption').textContent = 'No camera available for this filter.'; $('detail-picture').replaceChildren(); $('vehicle-list').replaceChildren(); notifyPane('detail', 'Camera explorer', null, $('detail-updated'), $('detail-pane')); return; }
+  $('detail-title').textContent = c.name;
+  $('detail-picture').replaceWith(Object.assign(drawPicture(c, true), { id: 'detail-picture' }));
+  const sample = patterns?.cameras?.[c.id], analysis = c.analysis;
+  const gap = analysis?.motion?.gap_seconds;
+  const cadence = gap == null ? 'No trustworthy short-gap frame pair.' : `Frame gap ${gap.toFixed(2)}s; motion status: ${analysis.motion.status.replaceAll('_', ' ')}.`;
+  $('detail-caption').textContent = `${sample?.samples || 1} distinct samples · ${age(c)}. ${cadence} ${analysis?.road_model ? 'Blue overlay: predicted road surface.' : 'Road model unavailable; road membership unknown.'} Heat shows relative visible-vehicle locations, not speed.${c.media_note ? ' ' + c.media_note : ''}`;
+  const list = vehicles(c).map(d => {
+    const i = c.detections.indexOf(d), row = node('div', undefined, 'vehicle-row'), road = d.on_road === true ? 'road-supported' : d.on_road === false ? 'road not supported' : 'road unknown';
+    row.append(node('span', `#${i + 1} ${d.label} · ${Math.round(d.confidence * 100)}%`), node('span', `${motionState(d)}${d.motion?.direction ? ' · ' + d.motion.direction : ''}${d.motion?.heading != null ? ' · ' + d.motion.heading + '° calibrated' : ''} · ${road}`));
+    return row;
+  });
+  $('vehicle-list').replaceChildren(...(list.length ? list : [node('p', 'No vehicles detected.', 'widget-note')]));
+  notifyPane('detail', 'Camera explorer', [c.id, c.hash, c.analysis, c.detections, sample, $('heat-overlay').checked, $('road-overlay').checked], $('detail-updated'), $('detail-pane'), data.generated);
+}
+function initMap() {
+  if (!window.L || map) return;
+  map = L.map('traffic-map', { scrollWheelZoom: false }).setView([53.1, -124.2], 5);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' }).addTo(map);
+  markerLayer = L.layerGroup().addTo(map);
+  if (L.heatLayer) heatLayer = L.heatLayer([], { radius: 28, blur: 22, maxZoom: 10, minOpacity: .2, gradient: { .2: '#467bd0', .4: '#49c7ad', .6: '#e7e775', .8: '#f19a4b', 1: '#ed5252' } }).addTo(map);
+}
+function renderMap(rows) {
+  initMap();
+  const fresh = $('fresh-only').checked, metric = $('map-metric').value, now = Date.now();
+  const samples = rows.filter(c => !fresh || now - Date.parse(c.observed) < 3600000).map(c => {
+    const value = metric === 'road' ? (c.analysis?.road_model ? c.analysis.on_road : null) : metric === 'history' ? patterns?.cameras?.[c.id]?.mean_vehicles : metric === 'moving' ? motionCounts([c]).moving : count(c);
+    return { c, value };
+  }).filter(s => s.value != null);
+  if (map) {
+    markerLayer.clearLayers(); const max = Math.max(1, ...samples.map(s => s.value));
+    heatLayer?.setLatLngs(samples.filter(s => s.value > 0).map(({ c, value }) => [c.lat, c.lon, value / max]));
+    for (const { c, value } of samples) {
+      const content = node('div'); content.append(node('strong', c.name), node('p', `${value} ${metric === 'road' ? 'road-supported vehicles' : metric === 'moving' ? 'motion-supported' : metric === 'history' ? 'average visible vehicles' : 'visible vehicles'} · ${age(c)}`));
+      const button = node('button', 'Inspect camera'); button.onclick = () => { selectCamera(c.id); $('detail-pane').scrollIntoView({ behavior: 'smooth', block: 'center' }); }; content.append(button);
+      L.circleMarker([c.lat, c.lon], { radius: 4, color: value ? '#b8ed86' : '#92a2ac', weight: 1, fillOpacity: .7 }).bindPopup(content).addTo(markerLayer);
+    }
+  } else {
+    $('traffic-map').hidden = true; $('map-fallback').hidden = false;
+    $('map-fallback').replaceChildren(node('p', 'Map library unavailable. Camera locations:', 'widget-note'), ...samples.slice(0, 20).map(({ c, value }) => {
+      const button = node('button', `${c.name} (${c.lat}, ${c.lon}) · ${value}`); button.onclick = () => selectCamera(c.id); return button;
+    }));
+  }
+  const stale = samples.filter(({ c }) => now - Date.parse(c.observed) > 3600000).length;
+  $('map-caption').textContent = `${samples.length} sampled cameras · ${stale} over 60 minutes old. ${metric === 'moving' ? 'Only motion-supported detections contribute; an empty heat layer means no qualifying measurements.' : 'Relative visible-vehicle density around camera locations. Brightness depends on camera coverage and field of view, not measured traffic flow.'}`;
+  notifyPane('map', 'Traffic heatmap', [metric, fresh, samples.map(({ c, value }) => [c.id, c.hash, value])], $('map-updated'), $('map-pane'), data.generated);
+}
+function renderTrend(rows) {
+  const hours = new Map((patterns?.hourly || []).map(h => [h.hour, h]));
+  const bins = [], end = new Date(patterns?.generated || Date.now()); end.setUTCMinutes(0, 0, 0);
+  for (let i = 23; i >= 0; i--) { const time = new Date(end.getTime() - i * 3600000), key = time.toISOString().replace('.000Z', 'Z'); bins.push({ time, sample: hours.get(key) }); }
+  const max = Math.max(1, ...bins.map(b => b.sample?.mean_vehicles || 0));
+  $('hourly-chart').replaceChildren(...bins.map(({ time, sample }) => {
+    const bin = node('div', undefined, 'hour-bin'), bar = node('div', undefined, 'bar' + (sample ? '' : ' no-sample'));
+    bar.style.height = sample ? `${Math.max(2, sample.mean_vehicles / max * 140)}px` : '2px';
+    bin.title = `${time.toISOString().slice(11, 13)}:00 UTC · ${sample ? sample.mean_vehicles + ' vehicles/frame · ' + sample.cameras + ' cameras · ' + sample.samples + ' samples' : 'No samples'}`;
+    bin.append(bar, node('span', time.toISOString().slice(11, 13))); return bin;
+  }));
+  const measured = bins.filter(b => b.sample).length;
+  $('trend-caption').textContent = `${measured}/24 hours sampled across the whole network. Hourly mean visible vehicles per frame, equally weighted by camera. Hover bars for camera/sample counts; gaps mean no samples. The camera set can vary by hour. Search and region filters apply to the map and feeds; this chart covers the full network.`;
+  notifyPane('trend', '24h traffic pattern', patterns?.hourly || [], $('trend-updated'), $('trend-pane'), patterns?.generated);
+}
+function renderFeeds(rows) {
+  rows = [...rows].sort($('sort').value === 'name' ? (a, b) => a.name.localeCompare(b.name) : $('sort').value === 'fresh' ? (a, b) => Date.parse(b.observed) - Date.parse(a.observed) : (a, b) => count(b) - count(a));
+  $('shown').textContent = `${rows.length} available`; $('feeds').replaceChildren();
+  for (const c of rows.slice(0, limit)) {
+    const card = node('article', undefined, 'card'), details = node('div', undefined, 'details'), h = node('h3'); h.append(link(c.name, c.source)); details.append(h);
+    const meta = node('div', undefined, 'meta'); meta.append(node('span', c.region), node('span', `${count(c)} vehicles visible`)); details.append(meta);
+    const counts = node('div', undefined, 'counts'); for (const [label, n] of Object.entries(c.counts || {})) counts.append(node('span', `${n} ${label}`)); if (!counts.childNodes.length) counts.append(node('span', 'No objects detected')); details.append(counts);
+    const states = motionCounts([c]); details.append(node('div', `${states.moving} moving · ${states.stationary} stationary · ${states.unknown} unknown`, 'motion-tag'));
+    const sources = node('div', undefined, 'camera-sources'); for (const [text, url] of [['DriveBC camera', c.source], ['Original image', c.image], ['Cached frame', c.frame]]) sources.append(link(text + ' ↗', url)); details.append(sources);
+    details.append(node('div', `${c.error ? 'Fetch failed · ' : ''}Observed ${age(c)}`, 'age'));
+    const inspect = node('button', 'Inspect motion & heat', 'inspect-button'); inspect.onclick = () => { selectCamera(c.id); $('detail-pane').scrollIntoView({ behavior: 'smooth', block: 'center' }); }; details.append(inspect);
+    const badge = node('span', undefined, 'update-badge'); details.append(badge); card.append(drawPicture(c), details); $('feeds').append(card);
+    notifyPane(`camera-${c.id}`, c.name, [c.hash, c.detections, c.error], badge, card, c.observed);
+  }
+  $('more').hidden = rows.length <= limit;
+  $('message').textContent = rows.length ? 'Amber: motion unknown · Green: moving · Blue: stationary. Select Inspect for per-vehicle evidence.' : 'No matching analyzed cameras.';
+  notifyPane('feeds', 'Camera feeds', [rows.slice(0, limit).map(c => [c.id, c.hash, c.detections, c.error]), $('boxes').checked], $('feeds-updated'), $('feeds-pane'), data.generated);
+}
+function render() {
+  if (!data) return;
+  const rows = filteredCameras();
+  const current = selectedCamera;
+  $('camera-select').replaceChildren(...rows.map(c => new Option(c.name, c.id)));
+  selectedCamera = rows.some(c => c.id === current) ? current : rows[0]?.id || '';
+  $('camera-select').value = selectedCamera;
+  renderFeeds(rows); renderMap(rows); renderTrend(rows); renderDetail();
+  const states = motionCounts(rows);
+  for (const state of ['moving', 'stationary', 'unknown']) $(state + '-count').textContent = states[state].toLocaleString();
+  const roads = rows.filter(c => c.analysis?.road_model).length;
+  const onRoadMoving = rows.reduce((n,c) => n + vehicles(c).filter(d => d.on_road === true && motionState(d) === 'moving').length, 0);
+  $('model-status').replaceChildren(node('p', `YOLO11: vehicle detection · SegFormer: ${roads}/${rows.length} camera road masks`), node('p', `${onRoadMoving} moving vehicles have predicted-road support.`), node('p', 'Rule-based meta-classifier: detector + appearance matching + forward/backward optical flow + camera stability.'), node('p', 'Meta DINOv2: available for short-gap video inputs. Webcam snapshots do not support cross-frame vehicle identity.'));
+  for (const error of data.model_errors || []) $('model-status').append(node('p', `${error.model} unavailable: ${error.error}`));
+  notifyPane('motion', 'Motion evidence', [states, roads, onRoadMoving, data.model_errors], $('motion-updated'), $('motion-pane'), data.generated);
+  notifyPane('controls', 'Network controls', [$('search').value, $('region').value, $('sort').value, $('boxes').checked, [...$('region').options].map(o => o.value)], $('controls-updated'), $('controls-pane'));
+}
+function apply(payload, history) {
+  data = payload; if (history) patterns = history;
+  const summary = { catalog: data.catalog_size, analyzed: data.cameras.length, vehicles: data.cameras.reduce((n, c) => n + count(c), 0) };
+  for (const [key, value] of Object.entries(summary)) {
+    $(key).textContent = value.toLocaleString(); notifyPane(key, { catalog: 'Camera catalog', analyzed: 'Analyzed feeds', vehicles: 'Vehicle count' }[key], value, $(key + '-updated'), $(key).parentElement, data.generated);
+  }
+  notifyPane('models', 'Model summary', [data.model, data.schema_version, data.model_errors], $('models-updated'), $('models-updated').parentElement, data.generated);
+  $('status').textContent = `Cache published ${new Date(data.generated).toLocaleString()}${data.errors?.length ? ' · ' + data.errors.length + ' fetch errors' : ''}`;
+  const selected = $('region').value; $('region').replaceChildren(new Option('All of British Columbia', ''));
+  for (const r of [...new Set(data.cameras.map(c => c.region))].sort()) $('region').add(new Option(r, r));
+  if ([...$('region').options].some(o => o.value === selected)) $('region').value = selected;
+  render();
+}
+async function refresh() {
+  if (refreshing) return;
+  refreshing = true; const button = $('refresh'); button.disabled = true; button.textContent = '↻ Refreshing…'; button.setAttribute('aria-busy', 'true');
+  $('refresh-result').textContent = 'Checking for the latest published analysis…';
+  try {
+    const stamp = Date.now(), previous = data?.generated;
+    const results = await Promise.allSettled(['latest', 'patterns'].map(async name => {
+      const r = await fetch(`data/${name}.json?t=${stamp}`, { cache: 'no-store' }); if (!r.ok) throw Error('HTTP ' + r.status); return r.json();
+    }));
+    if (results[0].status === 'rejected') throw results[0].reason;
+    apply(results[0].value, results[1].status === 'fulfilled' ? results[1].value : null);
+    $('refresh-result').textContent = (previous === data.generated ? 'Already showing the latest published analysis.' : 'Latest analysis loaded; changed panes are highlighted.') + ' Checked ' + new Date().toLocaleTimeString() + '.' + (results[1].status === 'rejected' ? ' Pattern history unavailable; keeping the prior history if loaded.' : '');
+  } catch (e) {
+    $('refresh-result').textContent = 'Refresh failed. Try again shortly.' + (data ? ' Keeping the last loaded analysis.' : '');
+    if (!data) { $('status').textContent = 'Snapshot cache unavailable'; $('message').textContent = 'The workflow has not published a snapshot yet, or the network is unavailable.'; }
+  } finally { refreshing = false; button.disabled = false; button.textContent = '↻ Refresh data'; button.removeAttribute('aria-busy'); }
+}
+for (const id of ['search', 'region', 'sort', 'boxes', 'map-metric', 'fresh-only']) $(id).addEventListener('input', () => { limit = 24; render(); });
+for (const id of ['heat-overlay', 'road-overlay']) $(id).addEventListener('input', renderDetail);
+$('camera-select').addEventListener('change', () => selectCamera($('camera-select').value));
+$('refresh').onclick = refresh; $('more').onclick = () => { limit += 24; render(); }; refresh(); setInterval(refresh, 60000);
+if (!location.hostname.endsWith('github.io')) {
+  const stream = new EventSource('api/events'); stream.onmessage = async e => { const p = JSON.parse(e.data); if (p.cameras) { apply(p); refresh(); } }; stream.onerror = () => stream.close();
+}
