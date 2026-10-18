@@ -40,6 +40,7 @@ jobs:
       - run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -r requirements.txt
       - run: python -m unittest discover -s tests
+      - run: node --test tests/motion.test.cjs
       - run: python -m pipeline.collect --limit 72
       - uses: actions/cache/save@v4
         with:

@@ -2,10 +2,11 @@ const $ = id => document.getElementById(id);
 const vehicleLabels = ['car', 'truck', 'bus', 'motorcycle', 'bicycle'];
 const count = c => vehicleLabels.reduce((n, k) => n + (c.counts?.[k] || 0), 0);
 const vehicles = c => (c.detections || []).filter(d => vehicleLabels.includes(d.label));
-const motionState = d => d.motion?.state || 'unknown';
+const motionState = d => d.motion?.state === 'moving' ? (validVector(d) ? 'moving' : 'unknown') : d.motion?.state || 'unknown';
 const signature = value => JSON.stringify(value);
 let data = null, patterns = null, limit = 24, selectedCamera = '', refreshing = false;
 let map = null, heatLayer = null, markerLayer = null;
+let selectedVehicle = null, selectedVehicleFrame = '';
 const paneVersions = new Map(), updateLog = [];
 let announcementTimer;
 function node(tag, text, cls) {
@@ -59,6 +60,12 @@ function drawPicture(c, detail = false) {
   image.loading = detail ? 'eager' : 'lazy'; image.alt = c.caption;
   image.src = `${c.frame}?v=${c.hash.slice(0, 12)}`;
   image.onerror = () => { image.alt = 'Cached image unavailable'; };
+  image.onload = () => {
+    if (image.naturalWidth && image.naturalHeight) {
+      picture.style.aspectRatio = `${image.naturalWidth} / ${image.naturalHeight}`;
+      renderVectorLayer(picture, c, detail, image.naturalWidth, image.naturalHeight, selectedVehicle);
+    }
+  };
   picture.append(image, node('span', `HWY ${c.highway}`, 'tag'));
   if (detail && ($('heat-overlay').checked || $('road-overlay').checked)) {
     const canvas = node('canvas'); canvas.width = 640; canvas.height = 400;
@@ -92,46 +99,53 @@ function drawPicture(c, detail = false) {
     svg.setAttribute('viewBox', '0 0 1000 1000'); svg.setAttribute('preserveAspectRatio', 'none');
     for (const [i, d] of (c.detections || []).entries()) {
       const [x, y, xx, yy] = d.box, state = motionState(d);
+      const focused = !detail || selectedVehicle == null || selectedVehicle === i;
       const color = state === 'moving' ? '#b8ed86' : state === 'stationary' ? '#69b9ff' : '#efbd7b';
       const r = document.createElementNS(svg.namespaceURI, 'rect');
       for (const [k, v] of Object.entries({ x: x * 1000, y: y * 1000, width: (xx - x) * 1000, height: (yy - y) * 1000, fill: 'none', stroke: color, 'stroke-width': 2 })) r.setAttribute(k, v);
+      r.setAttribute('vector-effect', 'non-scaling-stroke');
+      r.setAttribute('stroke-width', detail ? 2 : 1.5);
+      r.setAttribute('opacity', focused ? 1 : .18);
+      if (state === 'unknown') r.setAttribute('stroke-dasharray', '4 4');
       const title = document.createElementNS(svg.namespaceURI, 'title');
       title.textContent = `#${i + 1} ${d.label} ${Math.round(d.confidence * 100)}% · ${state}`; r.append(title); svg.append(r);
       if (detail) {
         const label = document.createElementNS(svg.namespaceURI, 'text');
         label.setAttribute('x', x * 1000); label.setAttribute('y', Math.max(24, y * 1000 - 8));
-        label.setAttribute('fill', color); label.setAttribute('font-size', '27'); label.textContent = `#${i + 1}`; svg.append(label);
+        label.setAttribute('fill', color); label.setAttribute('font-size', '30');
+        label.setAttribute('stroke', '#071014'); label.setAttribute('stroke-width', '6'); label.setAttribute('paint-order', 'stroke'); label.setAttribute('opacity', focused ? 1 : .18); label.textContent = `#${i + 1}`; svg.append(label);
       }
-      if (state === 'moving' && d.motion.vector) {
-        const [vx, vy] = d.motion.vector, length = Math.hypot(vx, vy);
-        if (!length) continue;
-        const cx = (x + xx) * 500, cy = (y + yy) * 500, dx = vx / length * 70, dy = vy / length * 70;
-        const path = document.createElementNS(svg.namespaceURI, 'path');
-        path.setAttribute('d', `M ${cx} ${cy} l ${dx} ${dy} m ${-dx * .25 + dy * .2} ${-dy * .25 - dx * .2} L ${cx + dx} ${cy + dy} l ${-dx * .25 - dy * .2} ${-dy * .25 + dx * .2}`);
-        path.setAttribute('fill', 'none'); path.setAttribute('stroke', color); path.setAttribute('stroke-width', '5'); svg.append(path);
-      }
+
     }
     picture.append(svg);
   }
+  renderVectorLayer(picture, c, detail, 640, 400, selectedVehicle);
   return picture;
 }
-function selectCamera(id) { selectedCamera = id; $('camera-select').value = id; renderDetail(); }
+function selectCamera(id) { if (id !== selectedCamera) selectedVehicle = null; selectedCamera = id; $('camera-select').value = id; renderDetail(); }
 function renderDetail() {
   const c = data?.cameras.find(c => c.id === selectedCamera);
-  if (!c) { $('detail-title').textContent = 'Select a camera'; $('detail-caption').textContent = 'No camera available for this filter.'; $('detail-picture').replaceChildren(); $('vehicle-list').replaceChildren(); notifyPane('detail', 'Camera explorer', null, $('detail-updated'), $('detail-pane')); return; }
+  if (!c) { $('detail-title').textContent = 'Select a camera'; $('detail-caption').textContent = 'No camera available for this filter.'; $('detail-picture').replaceChildren(); $('vehicle-list').replaceChildren(); $('motion-explanation').textContent = ''; $('show-all-vectors').hidden = true; notifyPane('detail', 'Camera explorer', null, $('detail-updated'), $('detail-pane')); return; }
+  if (selectedVehicle != null && (selectedVehicleFrame !== c.hash || selectedVehicle >= c.detections.length)) selectedVehicle = null;
   $('detail-title').textContent = c.name;
   $('detail-picture').replaceWith(Object.assign(drawPicture(c, true), { id: 'detail-picture' }));
   const sample = patterns?.cameras?.[c.id], analysis = c.analysis;
+  const measured = vehicles(c).filter(d => validVector(d)).length;
+  $('motion-explanation').textContent = motionExplanation(c, measured) + (selectedVehicle != null ? ` Only vehicle #${selectedVehicle + 1} is highlighted: ${motionDescription(c.detections[selectedVehicle])}.` : '');
+  $('motion-explanation').classList.toggle('has-vectors', measured > 0);
+  $('show-all-vectors').hidden = selectedVehicle == null;
   const gap = analysis?.motion?.gap_seconds;
   const cadence = gap == null ? 'No trustworthy short-gap frame pair.' : `Frame gap ${gap.toFixed(2)}s; motion status: ${analysis.motion.status.replaceAll('_', ' ')}.`;
   $('detail-caption').textContent = `${sample?.samples || 1} distinct samples · ${age(c)}. ${cadence} ${analysis?.road_model ? 'Blue overlay: predicted road surface.' : 'Road model unavailable; road membership unknown.'} Heat shows relative visible-vehicle locations, not speed.${c.media_note ? ' ' + c.media_note : ''}`;
   const list = vehicles(c).map(d => {
-    const i = c.detections.indexOf(d), row = node('div', undefined, 'vehicle-row'), road = d.on_road === true ? 'road-supported' : d.on_road === false ? 'road not supported' : 'road unknown';
-    row.append(node('span', `#${i + 1} ${d.label} · ${Math.round(d.confidence * 100)}%`), node('span', `${motionState(d)}${d.motion?.direction ? ' · ' + d.motion.direction : ''}${d.motion?.heading != null ? ' · ' + d.motion.heading + '° calibrated' : ''} · ${road}`));
+    const i = c.detections.indexOf(d), row = node('button', undefined, 'vehicle-row'), road = d.on_road === true ? 'road-supported' : d.on_road === false ? 'road not supported' : 'road unknown';
+    row.type = 'button'; row.setAttribute('aria-pressed', String(selectedVehicle === i));
+    row.onclick = () => { selectedVehicle = selectedVehicle === i ? null : i; selectedVehicleFrame = c.hash; renderDetail(); };
+    row.append(node('span', `#${i + 1} ${d.label} · ${Math.round(d.confidence * 100)}%`), node('span', `${motionDescription(d)} · ${road}`));
     return row;
   });
   $('vehicle-list').replaceChildren(...(list.length ? list : [node('p', 'No vehicles detected.', 'widget-note')]));
-  notifyPane('detail', 'Camera explorer', [c.id, c.hash, c.analysis, c.detections, sample, $('heat-overlay').checked, $('road-overlay').checked], $('detail-updated'), $('detail-pane'), data.generated);
+  notifyPane('detail', 'Camera explorer', [c.id, c.hash, c.analysis, c.detections, sample, selectedVehicle, $('vector-overlay').checked, $('vector-scale').value, $('heat-overlay').checked, $('road-overlay').checked], $('detail-updated'), $('detail-pane'), data.generated);
 }
 function initMap() {
   if (!window.L || map) return;
@@ -204,6 +218,7 @@ function render() {
   const current = selectedCamera;
   $('camera-select').replaceChildren(...rows.map(c => new Option(c.name, c.id)));
   selectedCamera = rows.some(c => c.id === current) ? current : rows[0]?.id || '';
+  if (selectedCamera !== current) selectedVehicle = null;
   $('camera-select').value = selectedCamera;
   renderFeeds(rows); renderMap(rows); renderTrend(rows); renderDetail();
   const states = motionCounts(rows);
@@ -246,7 +261,9 @@ async function refresh() {
   } finally { refreshing = false; button.disabled = false; button.textContent = '↻ Refresh data'; button.removeAttribute('aria-busy'); }
 }
 for (const id of ['search', 'region', 'sort', 'boxes', 'map-metric', 'fresh-only']) $(id).addEventListener('input', () => { limit = 24; render(); });
-for (const id of ['heat-overlay', 'road-overlay']) $(id).addEventListener('input', renderDetail);
+for (const id of ['heat-overlay', 'road-overlay', 'vector-overlay', 'vector-scale']) $(id).addEventListener('input', renderDetail);
+$('motion-only').onclick = () => { $('heat-overlay').checked = false; $('road-overlay').checked = false; $('vector-overlay').checked = true; renderDetail(); };
+$('show-all-vectors').onclick = () => { selectedVehicle = null; renderDetail(); };
 $('camera-select').addEventListener('change', () => selectCamera($('camera-select').value));
 $('refresh').onclick = refresh; $('more').onclick = () => { limit += 24; render(); }; refresh(); setInterval(refresh, 60000);
 if (!location.hostname.endsWith('github.io')) {
