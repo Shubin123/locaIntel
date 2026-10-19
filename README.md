@@ -84,3 +84,13 @@ Model and map sources: [Meta DINOv2](https://github.com/facebookresearch/dinov2)
 ### Reading motion arrows
 
 The camera explorer starts with heat and road shading off to keep motion legible. Green outlined arrows end at the current vehicle position; their tails show the background-compensated displacement enlarged by the selected 1×/4×/8×/16× display scale. Long arrows are shortened to fit the image. Their length is not speed. The numbered vehicle list gives image direction, analysis-pixel displacement, and frame gap; selecting a row isolates that vehicle. Selection resets when a new frame arrives because detection numbers are not persistent vehicle identities. Dashed amber boxes mean unknown motion, blue boxes indicate stationary evidence, and sparse snapshots show an explicit motion-unavailable explanation. `node --test tests/motion.test.cjs` checks vector geometry and evidence gating.
+
+### Refresh camera images from DriveBC
+
+**Refresh from DriveBC** now makes direct, cache-bypassing browser requests to the upstream image URLs for every visible camera and the selected camera. It also checks the published analysis. Image requests are limited to six at a time, time out after 12 seconds, and are shared between the camera card and explorer. Newly displayed cameras load from the source when filtering or loading more feeds. The latest-source view refreshes every minute while open; the analyzed-frame view remains selected during automatic analysis checks.
+
+Each camera shows its source-check time separately from its analyzed-frame age. A source refresh cannot make DriveBC capture a newer frame; an unchanged upstream image can legitimately remain unchanged. Failed requests retain the last successful source image, or fall back to the cached analyzed image, with a visible failure status. Refreshing source images still works when the published analysis request fails, provided the page already has its camera list.
+
+Source image bytes are hashed with SHA-256. Boxes, vectors, road shading and sampled heat are shown only when the displayed image exactly matches the analyzed frame. Otherwise the fresh image is labeled **not analyzed**, with older vehicle measurements hidden in the explorer. Counts, geographic maps and history still refer to the published analysis. **View analyzed frame** switches back to the matching cached frame; **Motion-only view** also selects that frame. On GitHub Pages, fresh images do not trigger Python inference: YOLO/SegFormer analysis remains on its separate scheduled workflow. No GitHub token is exposed to visitors.
+
+`node --test tests/*.test.cjs` checks direct source requests, cache bypass, bounded downloads, unchanged-image reuse, timeouts and last-good-image retention, as well as vector geometry.

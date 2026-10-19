@@ -9,6 +9,34 @@ let map = null, heatLayer = null, markerLayer = null;
 let selectedVehicle = null, selectedVehicleFrame = '';
 const paneVersions = new Map(), updateLog = [];
 let announcementTimer;
+const cameraSources = new CameraSourceCache();
+let sourceLoading = false, sourceJob = Promise.resolve([]);
+function sourceEntry(c) { return $('source-view').checked ? cameraSources.get(c.id) : null; }
+function unmatchedSource(c) { const source = sourceEntry(c); return !!source?.url && source.hash !== c.hash; }
+function sourceLabel(c) {
+  const source = sourceEntry(c);
+  if (!$('source-view').checked) return 'Analyzed frame · ' + age(c);
+  if (source?.url) return (source.error ? 'Source refresh failed · last good source image' : 'DriveBC checked ' + new Date(source.checked).toLocaleTimeString()) + (source.modified ? ' · upstream ' + new Date(source.modified).toLocaleString() : '') + (unmatchedSource(c) ? ' · no matching analysis' : ' · matching analysis');
+  return source?.error ? 'Source unavailable · cached analyzed frame retained' : 'Cached analyzed frame · fetching DriveBC image…';
+}
+function visibleSourceCameras() {
+  const rows = filteredCameras().sort($('sort').value === 'name' ? (a,b) => a.name.localeCompare(b.name) : $('sort').value === 'fresh' ? (a,b) => Date.parse(b.observed)-Date.parse(a.observed) : (a,b) => count(b)-count(a));
+  const selected = data?.cameras.find(c => c.id === selectedCamera);
+  return selected ? [...rows.slice(0,limit), selected] : rows.slice(0,limit);
+}
+async function loadVisibleSources(force = false) {
+  if (!data || !$('source-view').checked) return [];
+  if (sourceLoading) { await sourceJob; return force ? loadVisibleSources(true) : []; }
+  sourceLoading = true;
+  sourceJob = cameraSources.refresh(visibleSourceCameras(), force);
+  try { return await sourceJob; }
+  finally { sourceLoading = false; render(); }
+}
+function scheduleSources() {
+  if (!refreshing && !sourceLoading && $('source-view').checked && visibleSourceCameras().some(c => !cameraSources.get(c.id))) {
+    queueMicrotask(() => { if (!sourceLoading) loadVisibleSources(); });
+  }
+}
 function node(tag, text, cls) {
   const n = document.createElement(tag);
   if (text !== undefined) n.textContent = text;
@@ -58,16 +86,17 @@ function motionCounts(rows) {
 function drawPicture(c, detail = false) {
   const picture = node('div', undefined, 'picture'), image = node('img');
   image.loading = detail ? 'eager' : 'lazy'; image.alt = c.caption;
-  image.src = `${c.frame}?v=${c.hash.slice(0, 12)}`;
+  const source = sourceEntry(c), mismatched = unmatchedSource(c);
+  image.src = source?.url || `${c.frame}?v=${c.hash.slice(0, 12)}`;
   image.onerror = () => { image.alt = 'Cached image unavailable'; };
   image.onload = () => {
     if (image.naturalWidth && image.naturalHeight) {
       picture.style.aspectRatio = `${image.naturalWidth} / ${image.naturalHeight}`;
-      renderVectorLayer(picture, c, detail, image.naturalWidth, image.naturalHeight, selectedVehicle);
+      if (!mismatched) renderVectorLayer(picture, c, detail, image.naturalWidth, image.naturalHeight, selectedVehicle);
     }
   };
-  picture.append(image, node('span', `HWY ${c.highway}`, 'tag'));
-  if (detail && ($('heat-overlay').checked || $('road-overlay').checked)) {
+  picture.append(image, node('span', `HWY ${c.highway}`, 'tag'), node('span', source?.url ? (mismatched ? 'SOURCE · NOT ANALYZED' : 'SOURCE · ANALYSIS MATCHED') : 'ANALYZED FRAME', 'frame-kind'));
+  if (!mismatched && detail && ($('heat-overlay').checked || $('road-overlay').checked)) {
     const canvas = node('canvas'); canvas.width = 640; canvas.height = 400;
     const ctx = canvas.getContext('2d');
     if (ctx) {
@@ -94,7 +123,7 @@ function drawPicture(c, detail = false) {
     }
     picture.append(canvas);
   }
-  if ($('boxes').checked || detail) {
+  if (!mismatched && ($('boxes').checked || detail)) {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', '0 0 1000 1000'); svg.setAttribute('preserveAspectRatio', 'none');
     for (const [i, d] of (c.detections || []).entries()) {
@@ -119,10 +148,10 @@ function drawPicture(c, detail = false) {
     }
     picture.append(svg);
   }
-  renderVectorLayer(picture, c, detail, 640, 400, selectedVehicle);
+  if (!mismatched) renderVectorLayer(picture, c, detail, 640, 400, selectedVehicle);
   return picture;
 }
-function selectCamera(id) { if (id !== selectedCamera) selectedVehicle = null; selectedCamera = id; $('camera-select').value = id; renderDetail(); }
+function selectCamera(id) { if (id !== selectedCamera) selectedVehicle = null; selectedCamera = id; $('camera-select').value = id; renderDetail(); scheduleSources(); }
 function renderDetail() {
   const c = data?.cameras.find(c => c.id === selectedCamera);
   if (!c) { $('detail-title').textContent = 'Select a camera'; $('detail-caption').textContent = 'No camera available for this filter.'; $('detail-picture').replaceChildren(); $('vehicle-list').replaceChildren(); $('motion-explanation').textContent = ''; $('show-all-vectors').hidden = true; notifyPane('detail', 'Camera explorer', null, $('detail-updated'), $('detail-pane')); return; }
@@ -131,12 +160,12 @@ function renderDetail() {
   $('detail-picture').replaceWith(Object.assign(drawPicture(c, true), { id: 'detail-picture' }));
   const sample = patterns?.cameras?.[c.id], analysis = c.analysis;
   const measured = vehicles(c).filter(d => validVector(d)).length;
-  $('motion-explanation').textContent = motionExplanation(c, measured) + (selectedVehicle != null ? ` Only vehicle #${selectedVehicle + 1} is highlighted: ${motionDescription(c.detections[selectedVehicle])}.` : '');
-  $('motion-explanation').classList.toggle('has-vectors', measured > 0);
+  $('motion-explanation').textContent = unmatchedSource(c) ? 'New DriveBC image loaded. No matching analysis has been published; older boxes, motion vectors and heat are hidden. Choose View analyzed frame to inspect the last matching results.' : motionExplanation(c, measured) + (selectedVehicle != null ? ` Only vehicle #${selectedVehicle + 1} is highlighted: ${motionDescription(c.detections[selectedVehicle])}.` : '');
+  $('motion-explanation').classList.toggle('has-vectors', measured > 0 && !unmatchedSource(c));
   $('show-all-vectors').hidden = selectedVehicle == null;
   const gap = analysis?.motion?.gap_seconds;
   const cadence = gap == null ? 'No trustworthy short-gap frame pair.' : `Frame gap ${gap.toFixed(2)}s; motion status: ${analysis.motion.status.replaceAll('_', ' ')}.`;
-  $('detail-caption').textContent = `${sample?.samples || 1} distinct samples · ${age(c)}. ${cadence} ${analysis?.road_model ? 'Blue overlay: predicted road surface.' : 'Road model unavailable; road membership unknown.'} Heat shows relative visible-vehicle locations, not speed.${c.media_note ? ' ' + c.media_note : ''}`;
+  $('detail-caption').textContent = `${sourceLabel(c)}. Cached analysis: ${sample?.samples || 1} distinct samples · ${age(c)}. ${cadence} ${analysis?.road_model ? 'Blue overlay: predicted road surface.' : 'Road model unavailable; road membership unknown.'} Heat shows relative visible-vehicle locations, not speed.${c.media_note ? ' ' + c.media_note : ''}`;
   const list = vehicles(c).map(d => {
     const i = c.detections.indexOf(d), row = node('button', undefined, 'vehicle-row'), road = d.on_road === true ? 'road-supported' : d.on_road === false ? 'road not supported' : 'road unknown';
     row.type = 'button'; row.setAttribute('aria-pressed', String(selectedVehicle === i));
@@ -144,8 +173,8 @@ function renderDetail() {
     row.append(node('span', `#${i + 1} ${d.label} · ${Math.round(d.confidence * 100)}%`), node('span', `${motionDescription(d)} · ${road}`));
     return row;
   });
-  $('vehicle-list').replaceChildren(...(list.length ? list : [node('p', 'No vehicles detected.', 'widget-note')]));
-  notifyPane('detail', 'Camera explorer', [c.id, c.hash, c.analysis, c.detections, sample, selectedVehicle, $('vector-overlay').checked, $('vector-scale').value, $('heat-overlay').checked, $('road-overlay').checked], $('detail-updated'), $('detail-pane'), data.generated);
+  $('vehicle-list').replaceChildren(...(unmatchedSource(c) ? [node('p', 'Vehicle measurements belong to the previous analyzed frame. Select View analyzed frame to see them.', 'widget-note')] : list.length ? list : [node('p', 'No vehicles detected.', 'widget-note')]));
+  notifyPane('detail', 'Camera explorer', [c.id, c.hash, c.analysis, c.detections, sample, selectedVehicle, $('vector-overlay').checked, $('vector-scale').value, $('heat-overlay').checked, $('road-overlay').checked, sourceEntry(c)?.hash, sourceEntry(c)?.error], $('detail-updated'), $('detail-pane'), data.generated);
 }
 function initMap() {
   if (!window.L || map) return;
@@ -199,18 +228,19 @@ function renderFeeds(rows) {
   $('shown').textContent = `${rows.length} available`; $('feeds').replaceChildren();
   for (const c of rows.slice(0, limit)) {
     const card = node('article', undefined, 'card'), details = node('div', undefined, 'details'), h = node('h3'); h.append(link(c.name, c.source)); details.append(h);
-    const meta = node('div', undefined, 'meta'); meta.append(node('span', c.region), node('span', `${count(c)} vehicles visible`)); details.append(meta);
+    const meta = node('div', undefined, 'meta'); meta.append(node('span', c.region), node('span', `${count(c)} vehicles in cached analysis`)); details.append(meta);
     const counts = node('div', undefined, 'counts'); for (const [label, n] of Object.entries(c.counts || {})) counts.append(node('span', `${n} ${label}`)); if (!counts.childNodes.length) counts.append(node('span', 'No objects detected')); details.append(counts);
-    const states = motionCounts([c]); details.append(node('div', `${states.moving} moving · ${states.stationary} stationary · ${states.unknown} unknown`, 'motion-tag'));
+    const states = motionCounts([c]); details.append(node('div', `Cached motion: ${states.moving} moving · ${states.stationary} stationary · ${states.unknown} unknown`, 'motion-tag'));
     const sources = node('div', undefined, 'camera-sources'); for (const [text, url] of [['DriveBC camera', c.source], ['Original image', c.image], ['Cached frame', c.frame]]) sources.append(link(text + ' ↗', url)); details.append(sources);
-    details.append(node('div', `${c.error ? 'Fetch failed · ' : ''}Observed ${age(c)}`, 'age'));
+    details.append(node('div', sourceLabel(c), 'source-status'));
+    details.append(node('div', `${c.error ? 'Analysis fetch failed · ' : ''}Analyzed frame ${age(c)}`, 'age'));
     const inspect = node('button', 'Inspect motion & heat', 'inspect-button'); inspect.onclick = () => { selectCamera(c.id); $('detail-pane').scrollIntoView({ behavior: 'smooth', block: 'center' }); }; details.append(inspect);
     const badge = node('span', undefined, 'update-badge'); details.append(badge); card.append(drawPicture(c), details); $('feeds').append(card);
-    notifyPane(`camera-${c.id}`, c.name, [c.hash, c.detections, c.error], badge, card, c.observed);
+    notifyPane(`camera-${c.id}`, c.name, [c.hash, c.detections, c.error, sourceEntry(c)?.hash, sourceEntry(c)?.error], badge, card, c.observed);
   }
   $('more').hidden = rows.length <= limit;
-  $('message').textContent = rows.length ? 'Amber: motion unknown · Green: moving · Blue: stationary. Select Inspect for per-vehicle evidence.' : 'No matching analyzed cameras.';
-  notifyPane('feeds', 'Camera feeds', [rows.slice(0, limit).map(c => [c.id, c.hash, c.detections, c.error]), $('boxes').checked], $('feeds-updated'), $('feeds-pane'), data.generated);
+  $('message').textContent = rows.length ? 'Refresh requests visible images from DriveBC. Counts, maps and history describe cached analysis; overlays are hidden on unmatched source images.' : 'No matching analyzed cameras.';
+  notifyPane('feeds', 'Camera feeds', [rows.slice(0, limit).map(c => [c.id, c.hash, c.detections, c.error, sourceEntry(c)?.hash, sourceEntry(c)?.error]), $('boxes').checked, $('source-view').checked], $('feeds-updated'), $('feeds-pane'), data.generated);
 }
 function render() {
   if (!data) return;
@@ -228,7 +258,8 @@ function render() {
   $('model-status').replaceChildren(node('p', `YOLO11: vehicle detection · SegFormer: ${roads}/${rows.length} camera road masks`), node('p', `${onRoadMoving} moving vehicles have predicted-road support.`), node('p', 'Rule-based meta-classifier: detector + appearance matching + forward/backward optical flow + camera stability.'), node('p', 'Meta DINOv2: available for short-gap video inputs. Webcam snapshots do not support cross-frame vehicle identity.'));
   for (const error of data.model_errors || []) $('model-status').append(node('p', `${error.model} unavailable: ${error.error}`));
   notifyPane('motion', 'Motion evidence', [states, roads, onRoadMoving, data.model_errors], $('motion-updated'), $('motion-pane'), data.generated);
-  notifyPane('controls', 'Network controls', [$('search').value, $('region').value, $('sort').value, $('boxes').checked, [...$('region').options].map(o => o.value)], $('controls-updated'), $('controls-pane'));
+  notifyPane('controls', 'Network controls', [$('search').value, $('region').value, $('sort').value, $('boxes').checked, $('source-view').checked, [...$('region').options].map(o => o.value)], $('controls-updated'), $('controls-pane'));
+  scheduleSources();
 }
 function apply(payload, history) {
   data = payload; if (history) patterns = history;
@@ -243,29 +274,36 @@ function apply(payload, history) {
   if ([...$('region').options].some(o => o.value === selected)) $('region').value = selected;
   render();
 }
-async function refresh() {
+async function refresh(fromSource = false) {
   if (refreshing) return;
   refreshing = true; const button = $('refresh'); button.disabled = true; button.textContent = '↻ Refreshing…'; button.setAttribute('aria-busy', 'true');
-  $('refresh-result').textContent = 'Checking for the latest published analysis…';
+  if (fromSource) $('source-view').checked = true;
+  $('refresh-result').textContent = fromSource ? 'Requesting visible cameras from DriveBC and checking analysis…' : 'Checking published analysis…';
+  let analysisError = false, historyError = false;
   try {
-    const stamp = Date.now(), previous = data?.generated;
+    const stamp = Date.now();
     const results = await Promise.allSettled(['latest', 'patterns'].map(async name => {
       const r = await fetch(`data/${name}.json?t=${stamp}`, { cache: 'no-store' }); if (!r.ok) throw Error('HTTP ' + r.status); return r.json();
     }));
-    if (results[0].status === 'rejected') throw results[0].reason;
-    apply(results[0].value, results[1].status === 'fulfilled' ? results[1].value : null);
-    $('refresh-result').textContent = (previous === data.generated ? 'Already showing the latest published analysis.' : 'Latest analysis loaded; changed panes are highlighted.') + ' Checked ' + new Date().toLocaleTimeString() + '.' + (results[1].status === 'rejected' ? ' Pattern history unavailable; keeping the prior history if loaded.' : '');
+    if (results[0].status === 'fulfilled') apply(results[0].value, results[1].status === 'fulfilled' ? results[1].value : null);
+    else { analysisError = true; if (!data) throw results[0].reason; }
+    historyError = results[1].status === 'rejected';
+    const sources = fromSource ? await loadVisibleSources(true) : [];
+    const failed = sources.filter(s => s.error).length;
+    $('refresh-result').textContent = (fromSource ? (sources.length ? `${sources.length - failed}/${sources.length} visible camera images checked directly with DriveBC.${failed ? ' ' + failed + ' source requests failed; last good frames retained.' : ''}` : 'No visible cameras match the current filters.') : 'Published analysis checked.') + (analysisError ? ' Analysis refresh failed; previous results retained.' : ' Analysis published ' + new Date(data.generated).toLocaleString() + '.') + (historyError ? ' Pattern history unavailable; prior history retained.' : '');
   } catch (e) {
     $('refresh-result').textContent = 'Refresh failed. Try again shortly.' + (data ? ' Keeping the last loaded analysis.' : '');
-    if (!data) { $('status').textContent = 'Snapshot cache unavailable'; $('message').textContent = 'The workflow has not published a snapshot yet, or the network is unavailable.'; }
-  } finally { refreshing = false; button.disabled = false; button.textContent = '↻ Refresh data'; button.removeAttribute('aria-busy'); }
+    if (!data) { $('status').textContent = 'Snapshot cache unavailable'; $('message').textContent = 'The workflow has not published a camera catalog yet, or the network is unavailable.'; }
+  } finally { refreshing = false; button.disabled = false; button.textContent = '↻ Refresh from DriveBC'; button.removeAttribute('aria-busy'); scheduleSources(); }
 }
-for (const id of ['search', 'region', 'sort', 'boxes', 'map-metric', 'fresh-only']) $(id).addEventListener('input', () => { limit = 24; render(); });
+
+for (const id of ['search', 'region', 'sort', 'boxes', 'map-metric', 'fresh-only', 'source-view']) $(id).addEventListener('input', () => { limit = 24; render(); });
 for (const id of ['heat-overlay', 'road-overlay', 'vector-overlay', 'vector-scale']) $(id).addEventListener('input', renderDetail);
-$('motion-only').onclick = () => { $('heat-overlay').checked = false; $('road-overlay').checked = false; $('vector-overlay').checked = true; renderDetail(); };
+$('show-analyzed').onclick = () => { $('source-view').checked = false; render(); };
+$('motion-only').onclick = () => { $('source-view').checked = false; $('heat-overlay').checked = false; $('road-overlay').checked = false; $('vector-overlay').checked = true; render(); };
 $('show-all-vectors').onclick = () => { selectedVehicle = null; renderDetail(); };
 $('camera-select').addEventListener('change', () => selectCamera($('camera-select').value));
-$('refresh').onclick = refresh; $('more').onclick = () => { limit += 24; render(); }; refresh(); setInterval(refresh, 60000);
+$('refresh').onclick = () => refresh(true); $('more').onclick = () => { limit += 24; render(); }; refresh(true); setInterval(() => refresh($('source-view').checked), 60000);
 if (!location.hostname.endsWith('github.io')) {
   const stream = new EventSource('api/events'); stream.onmessage = async e => { const p = JSON.parse(e.data); if (p.cameras) { apply(p); refresh(); } }; stream.onerror = () => stream.close();
 }
