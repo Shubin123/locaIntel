@@ -32,7 +32,7 @@ globalThis.CameraSourceCache = class CameraSourceCache {
       await this.validate(blob);
       const hash = Array.from(new Uint8Array(await this.digest(await blob.arrayBuffer())), b => b.toString(16).padStart(2, '0')).join('');
       const url = previous?.hash === hash && previous.url ? previous.url : this.makeURL(blob);
-      const entry = { hash, url, checked: new Date().toISOString(), modified: response.headers.get('last-modified'), error: null };
+      const entry = { hash, url, blob, checked: new Date().toISOString(), modified: response.headers.get('last-modified'), error: null };
       this.entries.set(id, entry);
       // Let existing rendered <img> elements finish swapping to their new URLs.
       if (previous?.url && previous.url !== url) setTimeout(() => this.revokeURL(previous.url), 1000);

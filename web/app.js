@@ -10,13 +10,49 @@ let selectedVehicle = null, selectedVehicleFrame = '';
 const paneVersions = new Map(), updateLog = [];
 let announcementTimer;
 const cameraSources = new CameraSourceCache();
+let detectionPaintTimer;
+const browserDetector = new BrowserDetector({
+  onChange: () => {
+    clearTimeout(detectionPaintTimer);
+    detectionPaintTimer = setTimeout(() => { if (data) { renderFeeds(filteredCameras()); renderDetail(); renderBrowserStatus(); } }, 80);
+  },
+  isWanted: hash => $('source-view').checked && detectionTargets().some(c => cameraSources.get(c.id)?.hash === hash)
+});
+function localAnalysis(c) { const source = sourceEntry(c); return source?.hash ? browserDetector.get(source.hash) : null; }
+function displayedCamera(c) {
+  const local = localAnalysis(c), source = sourceEntry(c);
+  if (!unmatchedSource(c) || local?.status !== 'ready') return c;
+  const states = { moving: 0, stationary: 0, unknown: local.detections.filter(d => vehicleLabels.includes(d.label)).length };
+  return { ...c, hash: source.hash, detections: local.detections, counts: local.counts, observed: local.observed, browser_analysis: true,
+    analysis: { states, road_model: null, motion: { status: 'insufficient_cadence', gap_seconds: null } } };
+}
+function detectionTargets() {
+  const targets = visibleSourceCameras();
+  const selected = data?.cameras.find(c => c.id === selectedCamera);
+  return [...new Map((selected ? [selected, ...($('boxes').checked ? targets : [])] : targets).map(c => [c.id, c])).values()];
+}
+function scheduleDetection() {
+  if (!data || !$('source-view').checked) return;
+  for (const c of detectionTargets()) {
+    const source = sourceEntry(c);
+    if (source?.blob && source.hash !== c.hash) browserDetector.request(source, c.id === selectedCamera);
+  }
+}
+function renderBrowserStatus() {
+  const targets = data ? detectionTargets() : [];
+  const needing = targets.filter(c => sourceEntry(c)?.url && unmatchedSource(c));
+  const completed = needing.filter(c => localAnalysis(c)?.status === 'ready').length;
+  const failed = needing.filter(c => localAnalysis(c)?.status === 'error');
+  $('browser-detector-status').textContent = failed.length ? `Browser YOLO: ${completed}/${needing.length} fresh frames detected; ${failed.length} failed. ${localAnalysis(failed[0]).error}. Refresh retries detection, or use View analyzed frame.` :
+    needing.length ? `Browser YOLO: ${completed}/${needing.length} fresh frames detected${browserDetector.state === 'loading' ? ' · downloading model on first use' : completed < needing.length ? ' · processing images in the background' : ' · current-source boxes ready'}.` : 'YOLO boxes match the displayed analyzed frames. Fresh-image detection loads when needed.';
+}
 let sourceLoading = false, sourceJob = Promise.resolve([]);
 function sourceEntry(c) { return $('source-view').checked ? cameraSources.get(c.id) : null; }
 function unmatchedSource(c) { const source = sourceEntry(c); return !!source?.url && source.hash !== c.hash; }
 function sourceLabel(c) {
   const source = sourceEntry(c);
   if (!$('source-view').checked) return 'Analyzed frame · ' + age(c);
-  if (source?.url) return (source.error ? 'Source refresh failed · last good source image' : 'DriveBC checked ' + new Date(source.checked).toLocaleTimeString()) + (source.modified ? ' · upstream ' + new Date(source.modified).toLocaleString() : '') + (unmatchedSource(c) ? ' · no matching analysis' : ' · matching analysis');
+  if (source?.url) return (source.error ? 'Source refresh failed · last good source image' : 'DriveBC checked ' + new Date(source.checked).toLocaleTimeString()) + (source.modified ? ' · upstream ' + new Date(source.modified).toLocaleString() : '') + (unmatchedSource(c) ? localAnalysis(c)?.status === 'ready' ? ' · browser YOLO boxes ready' : localAnalysis(c)?.status === 'error' ? ' · browser detection failed' : ' · detecting fresh boxes…' : ' · matching published analysis');
   return source?.error ? 'Source unavailable · cached analyzed frame retained' : 'Cached analyzed frame · fetching DriveBC image…';
 }
 function visibleSourceCameras() {
@@ -30,7 +66,7 @@ async function loadVisibleSources(force = false) {
   sourceLoading = true;
   sourceJob = cameraSources.refresh(visibleSourceCameras(), force);
   try { return await sourceJob; }
-  finally { sourceLoading = false; render(); }
+  finally { sourceLoading = false; render(); scheduleDetection(); }
 }
 function scheduleSources() {
   if (!refreshing && !sourceLoading && $('source-view').checked && visibleSourceCameras().some(c => !cameraSources.get(c.id))) {
@@ -83,10 +119,11 @@ function motionCounts(rows) {
   for (const c of rows) for (const d of vehicles(c)) states[motionState(d)]++;
   return states;
 }
-function drawPicture(c, detail = false) {
+function drawPicture(original, detail = false) {
+  const c = displayedCamera(original);
   const picture = node('div', undefined, 'picture'), image = node('img');
   image.loading = detail ? 'eager' : 'lazy'; image.alt = c.caption;
-  const source = sourceEntry(c), mismatched = unmatchedSource(c);
+  const source = sourceEntry(original), mismatched = unmatchedSource(original) && !c.browser_analysis;
   image.src = source?.url || `${c.frame}?v=${c.hash.slice(0, 12)}`;
   image.onerror = () => { image.alt = 'Cached image unavailable'; };
   image.onload = () => {
@@ -95,8 +132,8 @@ function drawPicture(c, detail = false) {
       if (!mismatched) renderVectorLayer(picture, c, detail, image.naturalWidth, image.naturalHeight, selectedVehicle);
     }
   };
-  picture.append(image, node('span', `HWY ${c.highway}`, 'tag'), node('span', source?.url ? (mismatched ? 'SOURCE · NOT ANALYZED' : 'SOURCE · ANALYSIS MATCHED') : 'ANALYZED FRAME', 'frame-kind'));
-  if (!mismatched && detail && ($('heat-overlay').checked || $('road-overlay').checked)) {
+  picture.append(image, node('span', `HWY ${c.highway}`, 'tag'), node('span', source?.url ? (mismatched ? (localAnalysis(original)?.status === 'error' ? 'DETECTION FAILED' : 'DETECTING BOXES…') : c.browser_analysis ? 'CURRENT SOURCE · LOCAL YOLO' : 'SOURCE · ANALYSIS MATCHED') : 'ANALYZED FRAME', 'frame-kind'));
+  if (!mismatched && !c.browser_analysis && detail && ($('heat-overlay').checked || $('road-overlay').checked)) {
     const canvas = node('canvas'); canvas.width = 640; canvas.height = 400;
     const ctx = canvas.getContext('2d');
     if (ctx) {
@@ -151,21 +188,22 @@ function drawPicture(c, detail = false) {
   if (!mismatched) renderVectorLayer(picture, c, detail, 640, 400, selectedVehicle);
   return picture;
 }
-function selectCamera(id) { if (id !== selectedCamera) selectedVehicle = null; selectedCamera = id; $('camera-select').value = id; renderDetail(); scheduleSources(); }
+function selectCamera(id) { if (id !== selectedCamera) selectedVehicle = null; selectedCamera = id; $('camera-select').value = id; renderDetail(); scheduleSources(); scheduleDetection(); }
 function renderDetail() {
-  const c = data?.cameras.find(c => c.id === selectedCamera);
+  const original = data?.cameras.find(c => c.id === selectedCamera);
+  const c = original ? displayedCamera(original) : null;
   if (!c) { $('detail-title').textContent = 'Select a camera'; $('detail-caption').textContent = 'No camera available for this filter.'; $('detail-picture').replaceChildren(); $('vehicle-list').replaceChildren(); $('motion-explanation').textContent = ''; $('show-all-vectors').hidden = true; notifyPane('detail', 'Camera explorer', null, $('detail-updated'), $('detail-pane')); return; }
   if (selectedVehicle != null && (selectedVehicleFrame !== c.hash || selectedVehicle >= c.detections.length)) selectedVehicle = null;
   $('detail-title').textContent = c.name;
-  $('detail-picture').replaceWith(Object.assign(drawPicture(c, true), { id: 'detail-picture' }));
-  const sample = patterns?.cameras?.[c.id], analysis = c.analysis;
+  $('detail-picture').replaceWith(Object.assign(drawPicture(original, true), { id: 'detail-picture' }));
+  const sample = c.browser_analysis ? null : patterns?.cameras?.[c.id], analysis = c.analysis;
   const measured = vehicles(c).filter(d => validVector(d)).length;
-  $('motion-explanation').textContent = unmatchedSource(c) ? 'New DriveBC image loaded. No matching analysis has been published; older boxes, motion vectors and heat are hidden. Choose View analyzed frame to inspect the last matching results.' : motionExplanation(c, measured) + (selectedVehicle != null ? ` Only vehicle #${selectedVehicle + 1} is highlighted: ${motionDescription(c.detections[selectedVehicle])}.` : '');
+  $('motion-explanation').textContent = c.browser_analysis ? 'YOLO bounding boxes were computed locally for this exact source image. One still frame cannot establish movement; road shading and historical heat stay on their matching analyzed frames.' : unmatchedSource(original) ? (localAnalysis(original)?.status === 'error' ? 'Fresh-image detection failed. Choose View analyzed frame for the last available bounding boxes, or Refresh to retry.' : 'Computing YOLO bounding boxes for this fresh source image… The first run downloads the model; detection continues in the background.') : motionExplanation(c, measured) + (selectedVehicle != null ? ` Only vehicle #${selectedVehicle + 1} is highlighted: ${motionDescription(c.detections[selectedVehicle])}.` : '');
   $('motion-explanation').classList.toggle('has-vectors', measured > 0 && !unmatchedSource(c));
   $('show-all-vectors').hidden = selectedVehicle == null;
   const gap = analysis?.motion?.gap_seconds;
   const cadence = gap == null ? 'No trustworthy short-gap frame pair.' : `Frame gap ${gap.toFixed(2)}s; motion status: ${analysis.motion.status.replaceAll('_', ' ')}.`;
-  $('detail-caption').textContent = `${sourceLabel(c)}. Cached analysis: ${sample?.samples || 1} distinct samples · ${age(c)}. ${cadence} ${analysis?.road_model ? 'Blue overlay: predicted road surface.' : 'Road model unavailable; road membership unknown.'} Heat shows relative visible-vehicle locations, not speed.${c.media_note ? ' ' + c.media_note : ''}`;
+  $('detail-caption').textContent = c.browser_analysis ? `${sourceLabel(original)}. Browser YOLO detected ${vehicles(c).length} vehicles at ${new Date(c.observed).toLocaleTimeString()}. Motion and road membership are unknown for this still. Published analysis: ${age(original)}.` : `${sourceLabel(original)}. Cached analysis: ${sample?.samples || 1} distinct samples · ${age(c)}. ${cadence} ${analysis?.road_model ? 'Blue overlay: predicted road surface.' : 'Road model unavailable; road membership unknown.'} Heat shows relative visible-vehicle locations, not speed.${c.media_note ? ' ' + c.media_note : ''}`;
   const list = vehicles(c).map(d => {
     const i = c.detections.indexOf(d), row = node('button', undefined, 'vehicle-row'), road = d.on_road === true ? 'road-supported' : d.on_road === false ? 'road not supported' : 'road unknown';
     row.type = 'button'; row.setAttribute('aria-pressed', String(selectedVehicle === i));
@@ -173,8 +211,8 @@ function renderDetail() {
     row.append(node('span', `#${i + 1} ${d.label} · ${Math.round(d.confidence * 100)}%`), node('span', `${motionDescription(d)} · ${road}`));
     return row;
   });
-  $('vehicle-list').replaceChildren(...(unmatchedSource(c) ? [node('p', 'Vehicle measurements belong to the previous analyzed frame. Select View analyzed frame to see them.', 'widget-note')] : list.length ? list : [node('p', 'No vehicles detected.', 'widget-note')]));
-  notifyPane('detail', 'Camera explorer', [c.id, c.hash, c.analysis, c.detections, sample, selectedVehicle, $('vector-overlay').checked, $('vector-scale').value, $('heat-overlay').checked, $('road-overlay').checked, sourceEntry(c)?.hash, sourceEntry(c)?.error], $('detail-updated'), $('detail-pane'), data.generated);
+  $('vehicle-list').replaceChildren(...(unmatchedSource(original) && !c.browser_analysis ? [node('p', 'Fresh-image boxes are being computed. Select View analyzed frame for existing measurements.', 'widget-note')] : list.length ? list : [node('p', 'No vehicles detected.', 'widget-note')]));
+  notifyPane('detail', 'Camera explorer', [c.id, c.hash, c.analysis, c.detections, sample, selectedVehicle, $('vector-overlay').checked, $('vector-scale').value, $('heat-overlay').checked, $('road-overlay').checked, sourceEntry(original)?.hash, sourceEntry(original)?.error, localAnalysis(original)?.status], $('detail-updated'), $('detail-pane'), data.generated);
 }
 function initMap() {
   if (!window.L || map) return;
@@ -226,21 +264,22 @@ function renderTrend(rows) {
 function renderFeeds(rows) {
   rows = [...rows].sort($('sort').value === 'name' ? (a, b) => a.name.localeCompare(b.name) : $('sort').value === 'fresh' ? (a, b) => Date.parse(b.observed) - Date.parse(a.observed) : (a, b) => count(b) - count(a));
   $('shown').textContent = `${rows.length} available`; $('feeds').replaceChildren();
-  for (const c of rows.slice(0, limit)) {
+  for (const original of rows.slice(0, limit)) {
+    const c = displayedCamera(original);
     const card = node('article', undefined, 'card'), details = node('div', undefined, 'details'), h = node('h3'); h.append(link(c.name, c.source)); details.append(h);
-    const meta = node('div', undefined, 'meta'); meta.append(node('span', c.region), node('span', `${count(c)} vehicles in cached analysis`)); details.append(meta);
+    const meta = node('div', undefined, 'meta'); meta.append(node('span', c.region), node('span', c.browser_analysis ? `${count(c)} vehicles detected in source` : `${count(c)} vehicles in cached analysis`)); details.append(meta);
     const counts = node('div', undefined, 'counts'); for (const [label, n] of Object.entries(c.counts || {})) counts.append(node('span', `${n} ${label}`)); if (!counts.childNodes.length) counts.append(node('span', 'No objects detected')); details.append(counts);
-    const states = motionCounts([c]); details.append(node('div', `Cached motion: ${states.moving} moving · ${states.stationary} stationary · ${states.unknown} unknown`, 'motion-tag'));
+    const states = motionCounts([c]); details.append(node('div', `${c.browser_analysis ? 'Source motion' : 'Cached motion'}: ${states.moving} moving · ${states.stationary} stationary · ${states.unknown} unknown`, 'motion-tag'));
     const sources = node('div', undefined, 'camera-sources'); for (const [text, url] of [['DriveBC camera', c.source], ['Original image', c.image], ['Cached frame', c.frame]]) sources.append(link(text + ' ↗', url)); details.append(sources);
-    details.append(node('div', sourceLabel(c), 'source-status'));
-    details.append(node('div', `${c.error ? 'Analysis fetch failed · ' : ''}Analyzed frame ${age(c)}`, 'age'));
+    details.append(node('div', sourceLabel(original), 'source-status'));
+    details.append(node('div', `${c.error ? 'Analysis fetch failed · ' : ''}${c.browser_analysis ? 'Local detection' : 'Analyzed frame'} ${age(c)}`, 'age'));
     const inspect = node('button', 'Inspect motion & heat', 'inspect-button'); inspect.onclick = () => { selectCamera(c.id); $('detail-pane').scrollIntoView({ behavior: 'smooth', block: 'center' }); }; details.append(inspect);
-    const badge = node('span', undefined, 'update-badge'); details.append(badge); card.append(drawPicture(c), details); $('feeds').append(card);
-    notifyPane(`camera-${c.id}`, c.name, [c.hash, c.detections, c.error, sourceEntry(c)?.hash, sourceEntry(c)?.error], badge, card, c.observed);
+    const badge = node('span', undefined, 'update-badge'); details.append(badge); card.append(drawPicture(original), details); $('feeds').append(card);
+    notifyPane(`camera-${c.id}`, c.name, [c.hash, c.detections, c.error, sourceEntry(original)?.hash, sourceEntry(original)?.error, localAnalysis(original)?.status], badge, card, c.observed);
   }
   $('more').hidden = rows.length <= limit;
-  $('message').textContent = rows.length ? 'Refresh requests visible images from DriveBC. Counts, maps and history describe cached analysis; overlays are hidden on unmatched source images.' : 'No matching analyzed cameras.';
-  notifyPane('feeds', 'Camera feeds', [rows.slice(0, limit).map(c => [c.id, c.hash, c.detections, c.error, sourceEntry(c)?.hash, sourceEntry(c)?.error]), $('boxes').checked, $('source-view').checked], $('feeds-updated'), $('feeds-pane'), data.generated);
+  $('message').textContent = rows.length ? 'Refresh requests visible images from DriveBC. Fresh-source boxes run locally in your browser. Maps and history describe published analysis; motion is unknown for a single refreshed still.' : 'No matching analyzed cameras.';
+  notifyPane('feeds', 'Camera feeds', [rows.slice(0, limit).map(c => [c.id, c.hash, c.detections, c.error, sourceEntry(c)?.hash, sourceEntry(c)?.error, localAnalysis(c)?.status]), $('boxes').checked, $('source-view').checked], $('feeds-updated'), $('feeds-pane'), data.generated);
 }
 function render() {
   if (!data) return;
@@ -259,7 +298,7 @@ function render() {
   for (const error of data.model_errors || []) $('model-status').append(node('p', `${error.model} unavailable: ${error.error}`));
   notifyPane('motion', 'Motion evidence', [states, roads, onRoadMoving, data.model_errors], $('motion-updated'), $('motion-pane'), data.generated);
   notifyPane('controls', 'Network controls', [$('search').value, $('region').value, $('sort').value, $('boxes').checked, $('source-view').checked, [...$('region').options].map(o => o.value)], $('controls-updated'), $('controls-pane'));
-  scheduleSources();
+  scheduleSources(); scheduleDetection(); renderBrowserStatus();
 }
 function apply(payload, history) {
   data = payload; if (history) patterns = history;
@@ -277,7 +316,7 @@ function apply(payload, history) {
 async function refresh(fromSource = false) {
   if (refreshing) return;
   refreshing = true; const button = $('refresh'); button.disabled = true; button.textContent = '↻ Refreshing…'; button.setAttribute('aria-busy', 'true');
-  if (fromSource) $('source-view').checked = true;
+  if (fromSource) { $('source-view').checked = true; browserDetector.retryFailed(); }
   $('refresh-result').textContent = fromSource ? 'Requesting visible cameras from DriveBC and checking analysis…' : 'Checking published analysis…';
   let analysisError = false, historyError = false;
   try {
