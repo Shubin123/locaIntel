@@ -27,14 +27,14 @@ function queueViewPaint() {
   clearTimeout(detectionPaintTimer);
   detectionPaintTimer = setTimeout(() => {
     if (!data) return;
-    const currentRows=filteredCameras(),snapshots=currentRows.map(displayedCamera);renderFeeds(currentRows);renderDetail();renderBrowserStatus();renderMap(snapshots);renderTrend(currentRows);renderSummary();renderMotionEvidence(snapshots);releaseOldPhotoURLs();
+    const currentRows=filteredCameras(),snapshots=currentRows.map(displayedCamera);renderFeeds(currentRows);renderDetail();renderBrowserStatus();renderMap(snapshots);renderTrend(currentRows);renderSummary();renderMotionEvidence(snapshots);renderFacingStatus(snapshots);scheduleFacing();releaseOldPhotoURLs();
   }, powerProfile.paintMs);
 }
 function cacheFailure(error) { archiveError = error?.message || String(error); $('cache-status').textContent = 'Photo history could not be saved: ' + archiveError + '. Live monitoring continues.'; $('cache-status').classList.add('cache-error'); }
 function archiveChanged(event = {}) {
   archiveRevision++;
   if (event.clear) archiveMetadata.clear();
-  if (event.row) { archiveMetadata.set(event.row.key, event.row); scheduleTemporal(event.row); }
+  if (event.row) { archiveMetadata.set(event.row.key, event.row); scheduleTemporal(event.row);queueViewPaint(); }
   for (const key of event.removedKeys || []) archiveMetadata.delete(key);
   if (event.reload) { photoArchive.metadata().then(rows => { archiveMetadata.clear(); for (const row of rows) archiveMetadata.set(row.key,row); updateArchiveUI(); }).catch(cacheFailure); }
   clearTimeout(archivePaintTimer); archivePaintTimer = setTimeout(updateArchiveUI, 500);
@@ -125,11 +125,11 @@ function startPlayback(){
 }
 function goLive({refreshSources=true}={}){stopPlayback();timelineAt=null;seekSerial++;historyRows=[];historyPatterns=null;updateBackgroundBudget();render();renderTimeline();scheduleSources();scheduleDetection();if(refreshSources&&!refreshing)refresh(true);}
 function updateBackgroundBudget(){
-  cameraSources.setConcurrency(powerProfile.downloads);browserDetector.setBudget({delayMs:powerProfile.inferenceDelay});
+  cameraSources.setConcurrency(powerProfile.downloads);browserDetector.setBudget({delayMs:powerProfile.inferenceDelay});facingAnalyzer.setBudget({delayMs:powerProfile.inferenceDelay});
   $('background-status').textContent = !isLive() ? 'History review: live fetching and queued detection paused.' : document.hidden ? 'Hidden tab: background work paused.' : `Live · automatic refresh about every ${powerProfile.refreshMs/1000} seconds.`;
   clearTimeout(autoRefreshTimer);
   if(isLive()&&!document.hidden)autoRefreshTimer=setTimeout(async()=>{if(isLive()&&!document.hidden)await refresh($('source-view').checked);updateBackgroundBudget();},powerProfile.refreshMs);
-  if(isLive()&&!document.hidden)browserDetector.wake();
+  if(isLive()&&!document.hidden){browserDetector.wake();facingAnalyzer.wake();}
 }
 function setPower(value){
   powerProfile=Monitoring.profile(value);$('power-budget').value=powerProfile.level;$('power-label').value=powerProfile.name;$('power-budget').setAttribute('aria-valuetext',powerProfile.name);
@@ -180,7 +180,36 @@ function withTemporal(c){
   if(!t)return c;
   return {...c,detections:t.detections,analysis:{...c.analysis,states:t.log.states,motion:{status:t.log.status,temporal:t.log}}};
 }
-function displayedCamera(c) { return withTemporal(baseDisplayedCamera(c)); }
+const facingWrites=new Set();
+function persistFacing(source,index,result){
+  const key=source.cameraId+':'+source.hash,task=key+':'+index;if(facingWrites.has(task))return;facingWrites.add(task);
+  archiveReady.then(()=>photoArchive.saveOrientation(key,index,result)).catch(cacheFailure).finally(()=>facingWrites.delete(task));
+}
+const facingAnalyzer=new VehicleFacing.CropOrientation({
+  delayMs:powerProfile.inferenceDelay,
+  isPaused:()=>!isLive()||document.hidden||!$('facing-enabled').checked||browserDetector.running,
+  isWanted:hash=>isLive()&&visibleSourceCameras().some(c=>displayedCamera(c).hash===hash),
+  onChange:queueViewPaint,
+  onResult:persistFacing
+});
+function withFacing(c){
+  const saved=archiveMetadata.get(c.id+':'+c.hash)?.facing,source={cameraId:String(c.id),hash:c.hash};
+  return {...c,detections:(c.detections||[]).map((d,i)=>{const persisted=saved?.version===VehicleFacing.VERSION&&saved.byDetection?.[i]?.version===VehicleFacing.VERSION&&saved.byDetection?.[i]?.fingerprint===VehicleFacing.fingerprint(d)?saved.byDetection[i]:null;return {...d,orientation:persisted||(!c._archive?facingAnalyzer.get(source,d):null)||null};})};
+}
+function displayedCamera(c) { return withFacing(withTemporal(baseDisplayedCamera(c))); }
+function scheduleFacing(){
+  if(!data||!isLive()||document.hidden||!$('facing-enabled').checked)return;
+  for(const original of visibleSourceCameras()){
+    const c=displayedCamera(original),source=c._renderSource;
+    if(!source?.blob||c._waitingForSource)continue;
+    for(const [i,d]of (c.detections||[]).entries())if(vehicleLabels.includes(d.label)){
+      const identity={...source,cameraId:String(c.id)},row=archiveMetadata.get(c.id+':'+c.hash);
+      if(!d.orientation||d.orientation.state==='queued')facingAnalyzer.request(identity,d,i,c.id===selectedCamera&&i===(selectedVehicle??c.detections.findIndex(d=>d.label==='car')));
+      else if(['estimated','unknown'].includes(d.orientation.state)&&row&&VehicleFacing.fingerprint(row.detections?.[i]||{})===d.orientation.fingerprint&&(row.facing?.byDetection?.[i]?.version!==VehicleFacing.VERSION||row.facing?.byDetection?.[i]?.fingerprint!==d.orientation.fingerprint))persistFacing(identity,i,d.orientation);
+    }
+  }
+  facingAnalyzer.wake();
+}
 function baseDisplayedCamera(c) {
   if(c._archive)return c;
   if(!$('source-view').checked)return {...c,_renderSource:publishedPhotoSources.get(c.hash)||null};
@@ -363,15 +392,15 @@ function drawPicture(original, detail = false) {
     }
     picture.append(svg);
   }
-  if (!mismatched) renderVectorLayer(picture,c,detail,...(imageSizes.get(c.hash)||[640,400]),selectedVehicle);
+  if (!mismatched) {renderVectorLayer(picture,c,detail,...(imageSizes.get(c.hash)||[640,400]),selectedVehicle);renderFacingLayer(picture,c,detail,selectedVehicle);}
   return picture;
 }
-function selectCamera(id) { if (id !== selectedCamera) selectedVehicle = null; selectedCamera = id; $('camera-select').value = id; renderDetail(); scheduleSources(); scheduleDetection(); }
+function selectCamera(id) { if (id !== selectedCamera) selectedVehicle = null; selectedCamera = id; $('camera-select').value = id; renderDetail(); scheduleSources(); scheduleDetection();scheduleFacing(); }
 function renderDetail() {
   renderTemporalLog();
   const original = viewCameras().find(c => c.id === selectedCamera);
   const c = original ? displayedCamera(original) : null;
-  if (!c) { $('detail-title').textContent = data?.cameras.find(c=>c.id===selectedCamera)?.name||'Select a camera'; $('detail-caption').textContent = isLive()?'No camera available for this filter.':'No saved photo for this camera at or before the timeline cursor.'; $('detail-picture').replaceChildren(); $('vehicle-list').replaceChildren(); $('motion-explanation').textContent = ''; $('show-all-vectors').hidden = true; notifyPane('detail', 'Camera explorer', null, $('detail-updated'), $('detail-pane')); return; }
+  if (!c) { $('facing-inspector').replaceChildren(); $('detail-title').textContent = data?.cameras.find(c=>c.id===selectedCamera)?.name||'Select a camera'; $('detail-caption').textContent = isLive()?'No camera available for this filter.':'No saved photo for this camera at or before the timeline cursor.'; $('detail-picture').replaceChildren(); $('vehicle-list').replaceChildren(); $('motion-explanation').textContent = ''; $('show-all-vectors').hidden = true; notifyPane('detail', 'Camera explorer', null, $('detail-updated'), $('detail-pane')); return; }
   if (selectedVehicle != null && (selectedVehicleFrame !== c.hash || selectedVehicle >= c.detections.length)) selectedVehicle = null;
   $('detail-title').textContent = c.name;
   SmoothUI.picture($('detail-picture'),Object.assign(drawPicture(original,true),{id:'detail-picture'}));
@@ -382,14 +411,15 @@ function renderDetail() {
   $('show-all-vectors').hidden = selectedVehicle == null;
   const gap = analysis?.motion?.gap_seconds;
   const cadence = gap == null ? 'No trustworthy short-gap frame pair.' : `Frame gap ${gap.toFixed(2)}s; motion status: ${analysis.motion.status.replaceAll('_', ' ')}.`;
-  $('detail-caption').textContent = c._archive?`${sourceLabel(c)}. Photo ${age(c)}; ${c._analysisAvailable?c._analysisMode+' detections saved with this frame':'no saved measurements'}. All panes use this same timeline cursor.`:c.browser_analysis ? `${sourceLabel(original)}. Browser YOLO detected ${vehicles(c).length} vehicles at ${new Date(c.observed).toLocaleTimeString()}. Motion and road membership are unknown for this still. Published analysis: ${age(original)}.` : `${sourceLabel(original)}. Cached analysis: ${sample?.samples || 1} distinct samples · ${age(c)}. ${cadence} ${analysis?.road_model ? 'Blue overlay: predicted road surface.' : 'Road model unavailable; road membership unknown.'} Heat shows relative visible-vehicle locations, not speed.${c.media_note ? ' ' + c.media_note : ''}`;
+  $('detail-caption').textContent = c._archive?`${sourceLabel(c)}. Photo ${age(c)}; ${c._analysisAvailable?c._analysisMode+' detections saved with this frame':'no saved measurements'}. All panes use this same timeline cursor.`:c.browser_analysis ? `${sourceLabel(original)}. Browser YOLO detected ${vehicles(c).length} vehicles at ${new Date(c.observed).toLocaleTimeString()}. Facing is estimated from isolated crops; movement requires temporal evidence. Road membership is unavailable for this still. Published analysis: ${age(original)}.` : `${sourceLabel(original)}. Cached analysis: ${sample?.samples || 1} distinct samples · ${age(c)}. ${cadence} ${analysis?.road_model ? 'Blue overlay: predicted road surface.' : 'Road model unavailable; road membership unknown.'} Heat shows relative visible-vehicle locations, not speed.${c.media_note ? ' ' + c.media_note : ''}`;
   const list = vehicles(c).map(d => {
     const i = c.detections.indexOf(d), row = node('button', undefined, 'vehicle-row'), road = d.on_road === true ? 'road-supported' : d.on_road === false ? 'road not supported' : 'road unknown';
     row.dataset.key=c.hash+':'+i;row.type = 'button'; row.setAttribute('aria-pressed', String(selectedVehicle === i));
-    row.onclick = () => { selectedVehicle = selectedVehicle === i ? null : i; selectedVehicleFrame = c.hash; renderDetail(); };
-    row.append(node('span', `#${i + 1} ${d.label} · ${Math.round(d.confidence * 100)}%`), node('span', `${motionDescription(d)} · ${road}`));
+    row.onclick = () => { selectedVehicle = selectedVehicle === i ? null : i; selectedVehicleFrame = c.hash; renderDetail();scheduleFacing(); };
+    row.append(node('span', `#${i + 1} ${d.label} · ${Math.round(d.confidence * 100)}%`), node('span', `${VehicleFacing.description(d.orientation)} · ${motionDescription(d)} · ${road}`));
     return row;
   });
+  renderFacingInspector(c);
   SmoothUI.list($('vehicle-list'),list.length?list:[Object.assign(node('p',c._archive&&!c._analysisAvailable?'No saved analysis for this photo.':'No vehicles detected.','widget-note'),{id:'no-detections'})]);
   renderTimeline();
   notifyPane('detail', 'Camera explorer', [c.id, c.hash, c.analysis, c.detections, sample, selectedVehicle, $('vector-overlay').checked, $('vector-scale').value, $('heat-overlay').checked, $('road-overlay').checked, sourceEntry(original)?.hash, sourceEntry(original)?.error, localAnalysis(original)?.status], $('detail-updated'), $('detail-pane'), data.generated);
@@ -405,7 +435,8 @@ function renderMap(rows) {
   initMap();
   const fresh = $('fresh-only').checked, metric = $('map-metric').value, now = currentTime();
   const samples = rows.filter(c => !fresh || now - Date.parse(c.observed) < 3600000).map(c => {
-    const value = c._analysisAvailable===false?null:metric === 'road' ? (c.analysis?.road_model ? c.analysis.on_road : null) : metric === 'history' ? viewPatterns()?.cameras?.[c.id]?.mean_vehicles : metric === 'moving' ? motionCounts([c]).moving : count(c);
+    const facing=vehicles(c).filter(d=>d.orientation?.state==='estimated');
+    const value = c._analysisAvailable===false?null:metric.startsWith('facing_')?(facing.length?facing.filter(d=>d.orientation.facing===(metric==='facing_toward'?'toward_camera':'away_from_camera')).length:null):metric === 'road' ? (c.analysis?.road_model ? c.analysis.on_road : null) : metric === 'history' ? viewPatterns()?.cameras?.[c.id]?.mean_vehicles : metric === 'moving' ? motionCounts([c]).moving : count(c);
     return { c, value };
   });
   const mapVersion=signature([metric,fresh,timelineAt,samples.map(({c,value})=>[c.id,c.hash,value,Math.floor((now-Date.parse(c.observed))/60000)])]);
@@ -415,7 +446,7 @@ function renderMap(rows) {
     const max = Math.max(1, ...samples.map(s => s.value));
     heatLayer?.setLatLngs(samples.filter(s => s.value > 0).map(({ c, value }) => [c.lat, c.lon, value / max]));
     for (const { c, value } of samples) {
-      const content = node('div'); content.append(node('strong', c.name), node('p', `${value==null?'Analysis unavailable':value} ${metric === 'road' ? 'road-supported vehicles' : metric === 'moving' ? 'motion-supported' : metric === 'history' ? 'average visible vehicles' : 'visible vehicles'} · ${age(c)}`));
+      const content = node('div'); content.append(node('strong', c.name), node('p', `${value==null?'Analysis unavailable':value} ${metric.startsWith('facing_')?'appearance-based facing estimates':metric === 'road' ? 'road-supported vehicles' : metric === 'moving' ? 'motion-supported' : metric === 'history' ? 'average visible vehicles' : 'visible vehicles'} · ${age(c)}`));
       const button = node('button', 'Inspect camera'); button.onclick = () => { selectCamera(c.id); $('detail-pane').scrollIntoView({ behavior: 'smooth', block: 'center' }); }; content.append(button);
       let marker=markerNodes.get(c.id);if(!marker){marker=L.circleMarker([c.lat,c.lon],{radius:4,color:value?'#b8ed86':'#92a2ac',weight:1,fillOpacity:.7}).bindPopup(content).addTo(markerLayer);markerNodes.set(c.id,marker);}else{marker.setLatLng([c.lat,c.lon]);marker.setStyle({color:value?'#b8ed86':'#92a2ac'});const old=marker.getPopup().getContent();if(old?.nodeType)SmoothUI.patch(old,content);else marker.setPopupContent(content);}
     }
@@ -426,7 +457,7 @@ function renderMap(rows) {
     }));
   }
   const stale = samples.filter(({ c }) => now - Date.parse(c.observed) > 3600000).length;
-  $('map-caption').textContent = `${samples.length} sampled cameras · ${samples.filter(s=>s.value==null).length} without analysis · ${stale} over 60 minutes old. ${metric === 'moving' ? 'Only motion-supported detections contribute; an empty heat layer means no qualifying measurements.' : 'Relative visible-vehicle density around camera locations. Brightness depends on camera coverage and field of view, not measured traffic flow.'}`;
+  $('map-caption').textContent = `${samples.length} sampled cameras · ${samples.filter(s=>s.value==null).length} without analysis · ${stale} over 60 minutes old. ${metric.startsWith('facing_')?'Appearance-based, camera-relative facing estimates at the cursor; no estimated speed or measured traffic flow. Unresolved cameras do not contribute.':metric === 'moving' ? 'Only motion-supported detections contribute; an empty heat layer means no qualifying measurements.' : 'Relative visible-vehicle density around camera locations. Brightness depends on camera coverage and field of view, not measured traffic flow.'}`;
   notifyPane('map', 'Traffic heatmap', [metric, fresh, samples.map(({ c, value }) => [c.id, c.hash, value])], $('map-updated'), $('map-pane'), data.generated);
 }
 function renderTrend(rows) {
@@ -459,6 +490,7 @@ function renderFeeds(rows) {
     const details=node('div',undefined,'details');details.dataset.key='details';const h=node('h3');h.append(link(c.name,c.source));details.append(h);
     const meta=node('div',undefined,'meta');meta.append(node('span',c.region),node('span',c._archive?(c._analysisAvailable?`${count(c)} saved vehicle detections`:'Analysis unavailable'):c.browser_analysis?`${count(c)} vehicles detected in source`:`${count(c)} vehicles in analyzed frame`));details.append(meta);
     const counts=node('div',undefined,'counts');for(const [label,n]of Object.entries(c.counts||{}))counts.append(node('span',`${n} ${label}`));if(!counts.childNodes.length)counts.append(node('span',c._archive&&!c._analysisAvailable?'No stored analysis':'No objects detected'));details.append(counts);
+    const facing=vehicles(c).filter(d=>d.orientation?.state==='estimated');details.append(node('div',`${facing.length} facing estimates · ${facing.filter(d=>d.orientation.facing==='toward_camera').length} toward / ${facing.filter(d=>d.orientation.facing==='away_from_camera').length} away from camera`,'facing-tag'));
     const states=motionCounts([c]);details.append(node('div',`${c._archive?'Saved':'Frame'} motion: ${states.moving} moving · ${states.stationary} stationary · ${states.unknown} unknown`,'motion-tag'));
     const sources=node('div',undefined,'camera-sources');for(const [text,url]of[['DriveBC camera',c.source],['Original image',c.image]])if(url)sources.append(link(text+' ↗',url));details.append(sources);
     details.append(node('div',sourceLabel(original),'source-status'),node('div',`${c._archive?'Saved observation':c.browser_analysis?'Local detection':'Analyzed frame'} ${age(c)}`,'age'));
@@ -489,7 +521,7 @@ function render() {
   renderFeeds(rows);renderMap(snapshots);renderTrend(rows);renderDetail();
   renderMotionEvidence(snapshots);
   notifyPane('controls', 'Network controls', [$('search').value, $('region').value, $('sort').value, $('boxes').checked, $('source-view').checked, [...$('region').options].map(o => o.value)], $('controls-updated'), $('controls-pane'));
-  scheduleSources(); scheduleDetection(); renderBrowserStatus();renderSummary();if(isLive())cachePublishedFrames();else loadHistoryPhotos();
+  scheduleSources(); scheduleDetection(); scheduleFacing();renderFacingStatus(snapshots);renderBrowserStatus();renderSummary();if(isLive())cachePublishedFrames();else loadHistoryPhotos();
 }
 function renderMotionEvidence(snapshots){
   const states=motionCounts(snapshots);
@@ -518,7 +550,7 @@ async function refresh(fromSource = false) {
   if (refreshing || (!fromSource && (!isLive() || document.hidden))) return;
   if(fromSource&&!isLive())goLive({refreshSources:false});
   refreshing = true; const button = $('refresh'); button.disabled = true; button.textContent = '↻ Refreshing…'; button.setAttribute('aria-busy', 'true');
-  if (fromSource) { $('source-view').checked = true; browserDetector.retryFailed(); }
+  if (fromSource) { $('source-view').checked = true; browserDetector.retryFailed();facingAnalyzer.retryFailed(); }
   $('refresh-result').textContent = fromSource ? 'Requesting visible cameras from DriveBC and checking analysis…' : 'Checking published analysis…';
   let analysisError = false, historyError = false;
   try {
@@ -595,7 +627,7 @@ function installHoverPlayback(card,id){
     const show=async()=>{if(!card.isConnected||document.hidden||timelineAt!==previewClock){stop();return;}const row=rows[i++%rows.length],blob=await photoArchive.photo(row.hash);if(serial!==token)return;if(!blob){timer=setTimeout(show,700);return;}
       const url=URL.createObjectURL(blob);urls.push(url);img.onload=()=>{while(urls.length>2)URL.revokeObjectURL(urls.shift());};img.src=url;
       preview.querySelector('svg')?.remove();const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 1000 1000');svg.setAttribute('preserveAspectRatio','none');
-      for(const d of row.temporal?.detections||row.detections||[]){const rect=document.createElementNS(svg.namespaceURI,'rect'),[x,y,xx,yy]=d.box;for(const [k,v]of Object.entries({x:x*1000,y:y*1000,width:(xx-x)*1000,height:(yy-y)*1000,fill:'none',stroke:d.motion?.state==='moving'?'#b8ed86':d.motion?.state==='stationary'?'#69b9ff':'#efbd7b','stroke-width':3}))rect.setAttribute(k,v);svg.append(rect);}preview.append(svg);renderVectorLayer(preview,{detections:row.temporal?.detections||row.detections||[]},false,row.width||640,row.height||400);
+      for(const d of row.temporal?.detections||row.detections||[]){const rect=document.createElementNS(svg.namespaceURI,'rect'),[x,y,xx,yy]=d.box;for(const [k,v]of Object.entries({x:x*1000,y:y*1000,width:(xx-x)*1000,height:(yy-y)*1000,fill:'none',stroke:d.motion?.state==='moving'?'#b8ed86':d.motion?.state==='stationary'?'#69b9ff':'#efbd7b','stroke-width':3}))rect.setAttribute(k,v);svg.append(rect);}preview.append(svg);renderVectorLayer(preview,{detections:row.temporal?.detections||row.detections||[]},false,row.width||640,row.height||400);renderFacingLayer(preview,withFacing({...row.camera,hash:row.hash,detections:row.temporal?.detections||row.detections||[],_archive:true}),false,null);
       caption.textContent=`Cached playback · ${((i-1)%rows.length)+1}/${rows.length} · ${new Date(row.observedAt).toLocaleString()}`;timer=setTimeout(show,matchMedia('(prefers-reduced-motion: reduce)').matches?1800:700);
     };await show();
   };
@@ -608,8 +640,40 @@ let motionDownloadURL=null;
 function renderTemporalLog(){
   let pane=$('temporal-log');if(!pane){pane=node('details');pane.id='temporal-log';$('detail-pane').append(pane);}
   const rows=[...archiveMetadata.values()].filter(r=>r.cameraId===selectedCamera&&r.observedAt<=currentTime()&&r.temporal).sort((a,b)=>a.observedAt-b.observedAt);
-  const version=signature([selectedCamera,rows.map(r=>[r.hash,r.temporal.log])]);if(pane.dataset.version===version)return;pane.dataset.version=version;
+  const version=signature([selectedCamera,rows.map(r=>[r.hash,r.temporal.log,r.facing])]);if(pane.dataset.version===version)return;pane.dataset.version=version;
   const summary=node('summary',`Saved motion evidence · ${rows.length} observations`),explain=node('p','Three-frame appearance matching with a stable-background gate. Blue means persistent position across distinct images; it does not prove the same vehicle stayed continuously. Green vectors require two consistent steps ≤15 seconds apart. Longer gaps retain occupancy and turnover evidence; individual movement remains unresolved.');
   const list=node('ol');for(const row of rows.slice(-20).reverse()){const l=row.temporal.log;list.append(node('li',`${new Date(row.observedAt).toLocaleString()} · ${l.status.replaceAll('_',' ')} · ${l.states.moving} moving / ${l.states.stationary} persistent position / ${l.states.unknown} unresolved${l.turnover?` · ${l.turnover.arrivals} unmatched arrivals / ${l.turnover.departures} unmatched departures`:''}`));}
-  if(motionDownloadURL)URL.revokeObjectURL(motionDownloadURL);motionDownloadURL=URL.createObjectURL(new Blob([JSON.stringify(rows.map(r=>({cameraId:r.cameraId,hash:r.hash,...r.temporal})),null,2)],{type:'application/json'}));const download=node('a','Download camera motion log (JSON)');download.href=motionDownloadURL;download.download=`camera-${selectedCamera}-motion.json`;pane.replaceChildren(summary,explain,list,download);
+  if(motionDownloadURL)URL.revokeObjectURL(motionDownloadURL);motionDownloadURL=URL.createObjectURL(new Blob([JSON.stringify(rows.map(r=>({cameraId:r.cameraId,hash:r.hash,...r.temporal,facing:r.facing||null})),null,2)],{type:'application/json'}));const download=node('a','Download camera motion log (JSON)');download.href=motionDownloadURL;download.download=`camera-${selectedCamera}-motion.json`;pane.replaceChildren(summary,explain,list,download);
+}
+
+try{$('facing-enabled').checked=localStorage.getItem('locaintel.facing')!=='off';}catch(_){}
+$('facing-enabled').addEventListener('change',()=>{try{localStorage.setItem('locaintel.facing',$('facing-enabled').checked?'on':'off');}catch(_){}facingAnalyzer.setBudget({delayMs:powerProfile.inferenceDelay});scheduleFacing();queueViewPaint();});
+function renderFacingStatus(snapshots){
+  const ds=snapshots.flatMap(vehicles),totals={toward_camera:0,away_from_camera:0,side:0,unresolved:0};let completed=0;
+  for(const d of ds){if(d.orientation&&!['queued','processing'].includes(d.orientation.state))completed++;if(d.orientation?.state!=='estimated'){totals.unresolved++;continue;}if(d.orientation.facing==='toward_camera'||d.orientation.facing==='away_from_camera')totals[d.orientation.facing]++;else totals.side++;}
+  SmoothUI.list($('facing-totals'),Object.entries(totals).map(([key,n])=>{const cell=node('div');cell.dataset.key=key;cell.append(node('strong',String(n)),node('span',{toward_camera:'FACING CAMERA',away_from_camera:'FACING AWAY',side:'SIDE VIEW',unresolved:'UNRESOLVED / WAITING'}[key]));return cell;}));
+  $('facing-status').textContent=!isLive()?'Saved facing estimates at the timeline cursor; no new crop inference.':!$('facing-enabled').checked?'New facing inference paused; saved estimates remain visible.':facingAnalyzer.phase==='loading'?'Loading and caching the 55.3 MB vehicle-view model; YOLO boxes stay visible.':facingAnalyzer.phase==='error'?'Facing model unavailable. Refresh retries failed crops; vehicle boxes and cached history remain available.':`${completed}/${ds.length} filtered vehicle crops have results · ${facingAnalyzer.queue.length} queued${facingAnalyzer.running?' · analyzing one crop':''}. Analysis runs on viewed feeds. Tiny, clipped and unsupported crops abstain. Scores are not calibrated probabilities.`;
+  notifyPane('facing','Vehicle facing',[totals,completed,facingAnalyzer.phase,isLive(),$('facing-enabled').checked],$('facing-updated'),$('facing-pane'));
+}
+function renderFacingLayer(picture,c,detail,focused){
+  picture.querySelector('.facing-layer')?.remove();if(!detail&&!$('boxes').checked)return;
+  const layer=document.createElementNS('http://www.w3.org/2000/svg','svg');layer.classList.add('facing-layer');layer.setAttribute('viewBox','0 0 1000 1000');layer.setAttribute('preserveAspectRatio','none');layer.setAttribute('aria-label','Estimated car facing, separate from measured motion');
+  for(const [i,d]of (c.detections||[]).entries()){
+    const o=d.orientation;if(o?.state!=='estimated'||detail&&focused!=null&&focused!==i)continue;
+    const text=document.createElementNS(layer.namespaceURI,'text');text.setAttribute('x',String(d.box[0]*1000));text.setAttribute('y',String(Math.max(18,d.box[1]*1000-5)));text.textContent=(o.facing_glyph?'Est. '+o.facing_glyph+' · ':'')+(o.facing==='toward_camera'?'front':o.facing==='away_from_camera'?'rear':'side');const title=document.createElementNS(layer.namespaceURI,'title');title.textContent=VehicleFacing.description(o)+'; estimated from one crop, not measured movement';text.append(title);layer.append(text);
+    if(detail)for(const [x,y]of o.lights?.points||[]){const circle=document.createElementNS(layer.namespaceURI,'circle');for(const [key,value]of Object.entries({cx:x*1000,cy:y*1000,r:5,fill:'none',stroke:o.lights.type==='taillight_pair'?'#ff8b8b':'#fff3b0','stroke-width':2}))circle.setAttribute(key,value);layer.append(circle);}
+  }
+  picture.append(layer);
+}
+function renderFacingInspector(c){
+  const pane=$('facing-inspector'),index=selectedVehicle!=null?selectedVehicle:c.detections.findIndex(d=>d.label==='car'),d=c.detections[index];
+  if(!d){pane.replaceChildren(node('p','Select a detected car to inspect its isolated crop.','widget-note'));delete pane.dataset.cropKey;return;}
+  const source=c._archive?sourceEntry(c):c._renderSource,key=c.hash+':'+index+':'+signature(d.orientation);
+  if(pane.dataset.cropKey===key)return;pane.dataset.cropKey=key;
+  const canvas=node('canvas');canvas.width=224;canvas.height=224;canvas.setAttribute('role','img');canvas.setAttribute('aria-label',`Isolated vehicle #${index+1}`);
+  const details=node('div'),o=d.orientation;details.append(node('h3',`Isolated vehicle #${index+1} · ${d.label}`),node('p',VehicleFacing.description(o),'facing-caption'));
+  const lightText={headlight_pair:'Paired bright white/yellow pixels: possible headlights.',taillight_pair:'Paired red pixels: possible taillights.',ambiguous:'Both lamp colors present; lamp evidence is ambiguous.',none:'No reliable paired-lamp cue.'}[o?.lights?.type]||'Lamp evidence pending.';
+  details.append(node('p',lightText,'widget-note'),node('p',o?.model?`${o.view?.replaceAll('_',' ')} · model group score ${o.score?.toFixed(2)} (uncalibrated)${Number.isFinite(o.mirror_error_degrees)?' · mirror error '+Math.round(o.mirror_error_degrees)+'°':''} · ${o.crop?.width||'?'}×${o.crop?.height||'?'} source pixels`:'Car crops are evaluated by the pretrained eight-view model when enough source pixels are available.','widget-note'),node('p','This is an appearance estimate. Movement and stationary evidence stay separate.','widget-note'));
+  pane.replaceChildren(canvas,details);
+  (async()=>{const blob=source?.blob||await photoArchive.photo(c.hash);if(!blob||pane.dataset.cropKey!==key)return;const image=await createImageBitmap(blob);try{if(pane.dataset.cropKey!==key)return;const [x,y,xx,yy]=d.box;canvas.height=Math.max(1,Math.round(224*(yy-y)*image.height/((xx-x)*image.width)));const ctx=canvas.getContext('2d');ctx.drawImage(image,x*image.width,y*image.height,(xx-x)*image.width,(yy-y)*image.height,0,0,224,canvas.height);for(const [px,py]of o?.lights?.points||[]){ctx.beginPath();ctx.arc((px-x)/(xx-x)*224,(py-y)/(yy-y)*canvas.height,5,0,Math.PI*2);ctx.strokeStyle=o.lights.type==='taillight_pair'?'#ff8b8b':'#fff3b0';ctx.lineWidth=2;ctx.stroke();}}finally{image.close();}})().catch(()=>{if(pane.dataset.cropKey===key)canvas.setAttribute('aria-label','Saved crop unavailable');});
 }

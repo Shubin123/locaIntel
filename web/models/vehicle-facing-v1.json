@@ -1,0 +1,28 @@
+{
+  "version": "cfv-convnext-facing-v1",
+  "model": "CFV ConvNeXt-Small (INT8 dense / FP32 convolution)",
+  "source": "https://huggingface.co/fort-cyber/Car-orientation-image/tree/a8fddadf6af25a6f53ed6a449f74e4106c9c34a2",
+  "revision": "a8fddadf6af25a6f53ed6a449f74e4106c9c34a2",
+  "sha256": "a936d50e692189694108aea3f0024119ebe030d792d9b7d5974e93de0ae8a0a6",
+  "bytes": 57976957,
+  "checkpoint_sha256": "26bd9e4eff8a4cfa3a264223ecced760f2fb3d1f29dc68f4e23b1b27babcd91d",
+  "input": {
+    "size": 224,
+    "rescale": 0.00392156862745098,
+    "normalize": false,
+    "crop": "isolated vehicle resized to square, as in CFV prepare_data.py"
+  },
+  "views": [
+    "front",
+    "front_left",
+    "left_side",
+    "rear_left",
+    "rear",
+    "rear_right",
+    "right_side",
+    "front_right"
+  ],
+  "angle_convention": "CFV relative view: front=0, left-side=90, rear=180, right-side=270. Not a compass heading.",
+  "citation": "Catruna et al. Car Full View Dataset: Fine-Grained Predictions of Car Orientation from Images. Electronics 12(24), 4947 (2023). https://doi.org/10.3390/electronics12244947",
+  "limitations": "Trained on car photographs, not DriveBC. Car crops only. Scores are uncalibrated. Facing is not measured motion."
+}
