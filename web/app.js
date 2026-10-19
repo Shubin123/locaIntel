@@ -34,7 +34,7 @@ function cacheFailure(error) { archiveError = error?.message || String(error); $
 function archiveChanged(event = {}) {
   archiveRevision++;
   if (event.clear) archiveMetadata.clear();
-  if (event.row) archiveMetadata.set(event.row.key, event.row);
+  if (event.row) { archiveMetadata.set(event.row.key, event.row); scheduleTemporal(event.row); }
   for (const key of event.removedKeys || []) archiveMetadata.delete(key);
   if (event.reload) { photoArchive.metadata().then(rows => { archiveMetadata.clear(); for (const row of rows) archiveMetadata.set(row.key,row); updateArchiveUI(); }).catch(cacheFailure); }
   clearTimeout(archivePaintTimer); archivePaintTimer = setTimeout(updateArchiveUI, 500);
@@ -175,7 +175,13 @@ const browserDetector = new BrowserDetector({
 
 });
 function localAnalysis(c){const source=sourceEntry(c);if(!source?.hash)return null;const current=browserDetector.get(source.hash);if(current)return current;const saved=archiveMetadata.get(c.id+':'+source.hash);const result=saved?.analysisMode==='browser'&&saved.detectorVersion===browserDetector.modelVersion?{version:saved.detectorVersion,detections:saved.detections,counts:saved.counts,observed:new Date(saved.observedAt).toISOString()}:saved?.browserResult;if(result?.version===browserDetector.modelVersion&&Array.isArray(result.detections))return{...result,status:'ready',hash:source.hash};return null;}
-function displayedCamera(c) {
+function withTemporal(c){
+  const t=archiveMetadata.get(c.id+':'+c.hash)?.temporal;
+  if(!t)return c;
+  return {...c,detections:t.detections,analysis:{...c.analysis,states:t.log.states,motion:{status:t.log.status,temporal:t.log}}};
+}
+function displayedCamera(c) { return withTemporal(baseDisplayedCamera(c)); }
+function baseDisplayedCamera(c) {
   if(c._archive)return c;
   if(!$('source-view').checked)return {...c,_renderSource:publishedPhotoSources.get(c.hash)||null};
   const local=localAnalysis(c),source=sourceEntry(c);
@@ -362,6 +368,7 @@ function drawPicture(original, detail = false) {
 }
 function selectCamera(id) { if (id !== selectedCamera) selectedVehicle = null; selectedCamera = id; $('camera-select').value = id; renderDetail(); scheduleSources(); scheduleDetection(); }
 function renderDetail() {
+  renderTemporalLog();
   const original = viewCameras().find(c => c.id === selectedCamera);
   const c = original ? displayedCamera(original) : null;
   if (!c) { $('detail-title').textContent = data?.cameras.find(c=>c.id===selectedCamera)?.name||'Select a camera'; $('detail-caption').textContent = isLive()?'No camera available for this filter.':'No saved photo for this camera at or before the timeline cursor.'; $('detail-picture').replaceChildren(); $('vehicle-list').replaceChildren(); $('motion-explanation').textContent = ''; $('show-all-vectors').hidden = true; notifyPane('detail', 'Camera explorer', null, $('detail-updated'), $('detail-pane')); return; }
@@ -370,7 +377,7 @@ function renderDetail() {
   SmoothUI.picture($('detail-picture'),Object.assign(drawPicture(original,true),{id:'detail-picture'}));
   const sample = c.browser_analysis ? null : viewPatterns()?.cameras?.[c.id], analysis = c.analysis;
   const measured = vehicles(c).filter(d => validVector(d)).length;
-  $('motion-explanation').textContent = c._waitingForSource ? 'Updating this camera in the background. The previous photo and its matching boxes stay visible until the next frame is ready.' : c._archive&&!c._analysisAvailable?'This saved photo has no stored detections. No boxes or motion measurements are assumed.':c.browser_analysis ? 'YOLO bounding boxes were computed locally for this exact source image. One still frame cannot establish movement; road shading and historical heat stay on their matching analyzed frames.' : unmatchedSource(original) ? (localAnalysis(original)?.status === 'error' ? 'Fresh-image detection failed. Choose View analyzed frame for the last available bounding boxes, or Refresh to retry.' : 'Computing YOLO bounding boxes for this fresh source image… The first run downloads the model; detection continues in the background.') : motionExplanation(c, measured) + (selectedVehicle != null ? ` Only vehicle #${selectedVehicle + 1} is highlighted: ${motionDescription(c.detections[selectedVehicle])}.` : '');
+  $('motion-explanation').textContent = c._waitingForSource ? 'Updating this camera in the background. The previous photo and its matching boxes stay visible until the next frame is ready.' : c._archive&&!c._analysisAvailable?'This saved photo has no stored detections. No boxes or motion measurements are assumed.':c.analysis?.motion?.temporal ? `Local temporal log: ${c.analysis.motion.temporal.status.replaceAll('_',' ')} · ${c.analysis.motion.temporal.frameHashes.length} distinct frames. ${c.analysis.states.moving} moving · ${c.analysis.states.stationary} persistent-position stationary · ${c.analysis.states.unknown} unresolved. Moving tracks require consistent appearance and direction across three observations, each gap ≤15s. Stationary means persistent position, not proven identity. Sparse or ambiguous matches remain unresolved.` : c.browser_analysis ? 'YOLO boxes match this photo. Collecting three distinct cached observations for temporal evidence; repeated source photos do not count.' : unmatchedSource(original) ? (localAnalysis(original)?.status === 'error' ? 'Fresh-image detection failed. Choose View analyzed frame for the last available bounding boxes, or Refresh to retry.' : 'Computing YOLO bounding boxes for this fresh source image… The first run downloads the model; detection continues in the background.') : motionExplanation(c, measured) + (selectedVehicle != null ? ` Only vehicle #${selectedVehicle + 1} is highlighted: ${motionDescription(c.detections[selectedVehicle])}.` : '');
   $('motion-explanation').classList.toggle('has-vectors', measured > 0 && !unmatchedSource(c));
   $('show-all-vectors').hidden = selectedVehicle == null;
   const gap = analysis?.motion?.gap_seconds;
@@ -446,6 +453,7 @@ function renderFeeds(rows) {
     const c=displayedCamera(original),key=String(c.id);wanted.add(key);
     const version=signature([c.hash,c.detections,c.counts,c.error,c.name,c.region,c._waitingForSource,c._archive,c._analysisAvailable,sourceLabel(original),age(c),c._renderSource?.url,sourceEntry(original)?.url,$('boxes').checked,localAnalysis(original)?.status]);
     let card=cardNodes.get(key);
+    if(card?.dataset.previewing==='true'){nodes.push(card);continue;}
     if(card&&cardVersions.get(key)===version){nodes.push(card);continue;}
     const next=node('article',undefined,'card');next.dataset.key=key;
     const details=node('div',undefined,'details');details.dataset.key='details';const h=node('h3');h.append(link(c.name,c.source));details.append(h);
@@ -454,9 +462,10 @@ function renderFeeds(rows) {
     const states=motionCounts([c]);details.append(node('div',`${c._archive?'Saved':'Frame'} motion: ${states.moving} moving · ${states.stationary} stationary · ${states.unknown} unknown`,'motion-tag'));
     const sources=node('div',undefined,'camera-sources');for(const [text,url]of[['DriveBC camera',c.source],['Original image',c.image]])if(url)sources.append(link(text+' ↗',url));details.append(sources);
     details.append(node('div',sourceLabel(original),'source-status'),node('div',`${c._archive?'Saved observation':c.browser_analysis?'Local detection':'Analyzed frame'} ${age(c)}`,'age'));
-    const inspect=node('button','Inspect motion & heat','inspect-button');inspect.onclick=()=>{selectCamera(c.id);$('detail-pane').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'});};details.append(inspect,node('span',undefined,'update-badge'));
+    const inspect=node('button','Inspect motion & heat','inspect-button');inspect.onclick=()=>{selectCamera(c.id);$('detail-pane').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'});};details.append(inspect,node('div','Hover or focus this card to play saved frames · up to 24 photos','source-status'),node('span',undefined,'update-badge'));
     next.append(drawPicture(original),details);
     if(card)SmoothUI.patch(card,next);else card=next;
+    installHoverPlayback(card,key);
     cardNodes.set(key,card);cardVersions.set(key,version);nodes.push(card);
     notifyPane(`camera-${key}`,c.name,[c.hash,c.detections,c.error,c._waitingForSource,sourceEntry(original)?.error],card.querySelector('.update-badge'),card,c.observed);
   }
@@ -552,5 +561,55 @@ $('cache-limit').addEventListener('change',configureStorage);$('cache-retention'
 $('clear-history').onclick=async()=>{if(!confirm('Delete saved camera photos from this browser? This cannot be undone.'))return;try{await photoArchive.clear();for(const source of historyPhotoSources.values())URL.revokeObjectURL(source.url);historyPhotoSources.clear();goLive({refreshSources:false});await updateArchiveUI();}catch(error){cacheFailure(error);}};
 document.addEventListener('visibilitychange',()=>{if(document.hidden)stopPlayback();updateBackgroundBudget();if(!document.hidden&&isLive()){scheduleSources();scheduleDetection();}});
 window.addEventListener('monitor-frame-commit',releaseOldPhotoURLs);
-archiveReady=photoArchive.initialize().then(async()=>{const rows=await photoArchive.metadata();for(const row of rows)archiveMetadata.set(row.key,row);for(const row of rows.filter(r=>r.analysisMode==='browser'&&r.detectorVersion===browserDetector.modelVersion&&Array.isArray(r.detections)).sort((a,b)=>b.observedAt-a.observedAt).slice(0,128))browserDetector.entries.set(row.hash,{status:'ready',hash:row.hash,version:row.detectorVersion,detections:row.detections,counts:row.counts||{},observed:new Date(row.observedAt).toISOString()});archiveRevision++;await updateArchiveUI();}).catch(cacheFailure);
+archiveReady=photoArchive.initialize().then(async()=>{const rows=await photoArchive.metadata();for(const row of rows){archiveMetadata.set(row.key,row);scheduleTemporal(row);}for(const row of rows.filter(r=>r.analysisMode==='browser'&&r.detectorVersion===browserDetector.modelVersion&&Array.isArray(r.detections)).sort((a,b)=>b.observedAt-a.observedAt).slice(0,128))browserDetector.entries.set(row.hash,{status:'ready',hash:row.hash,version:row.detectorVersion,detections:row.detections,counts:row.counts||{},observed:new Date(row.observedAt).toISOString()});archiveRevision++;await updateArchiveUI();}).catch(cacheFailure);
 setPower(powerProfile.level);refresh(true);
+
+// Temporal work runs serially with the same device budget as inference.
+const temporalPending=new Set(),hoverCards=new WeakSet();let temporalRunning=false;
+function scheduleTemporal(row){
+  if(!row.detections||row.temporal||!isLive())return;
+  temporalPending.add(row.cameraId);setTimeout(runTemporal,0);
+}
+async function runTemporal(){
+  if(temporalRunning||!isLive()||document.hidden||!temporalPending.size)return;
+  temporalRunning=true;const id=temporalPending.values().next().value;temporalPending.delete(id);
+  try{
+    const rows=[...archiveMetadata.values()].filter(r=>r.cameraId===id&&r.detections).sort((a,b)=>a.observedAt-b.observedAt).slice(-3),latest=rows.at(-1);
+    if(latest&&!latest.temporal){const frames=[];
+      for(const row of rows){const blob=await photoArchive.photo(row.hash);if(!blob)continue;frames.push({...row,...await TemporalTraffic.features(blob,row.detections)});}
+      if(frames.length){const result=TemporalTraffic.analyze(frames);await photoArchive.saveTemporal(latest.key,result);queueViewPaint();}
+    }
+  }catch(error){console.warn('Temporal analysis unavailable',error);}
+  finally{temporalRunning=false;if(temporalPending.size)setTimeout(runTemporal,powerProfile.inferenceDelay+50);}
+}
+function installHoverPlayback(card,id){
+  if(hoverCards.has(card))return;hoverCards.add(card);
+  let token=0,timer=null,preview=null,urls=[];
+  const stop=()=>{token++;clearTimeout(timer);preview?.remove();preview=null;urls.forEach(URL.revokeObjectURL);urls=[];delete card.dataset.previewing;cardVersions.delete(id);queueViewPaint();};
+  const start=async()=>{
+    if(card.dataset.previewing)return;const serial=++token,previewClock=timelineAt;
+    const rows=[...archiveMetadata.values()].filter(r=>r.cameraId===id&&r.observedAt<=currentTime()).sort((a,b)=>a.observedAt-b.observedAt).slice(-24);
+    if(rows.length<2)return;
+    card.dataset.previewing='true';preview=node('div',undefined,'hover-playback');preview.setAttribute('aria-live','off');const img=node('img'),caption=node('span');preview.append(img,caption);card.querySelector('.picture').append(preview);
+    let i=0;
+    const show=async()=>{if(!card.isConnected||document.hidden||timelineAt!==previewClock){stop();return;}const row=rows[i++%rows.length],blob=await photoArchive.photo(row.hash);if(serial!==token)return;if(!blob){timer=setTimeout(show,700);return;}
+      const url=URL.createObjectURL(blob);urls.push(url);img.onload=()=>{while(urls.length>2)URL.revokeObjectURL(urls.shift());};img.src=url;
+      preview.querySelector('svg')?.remove();const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 1000 1000');svg.setAttribute('preserveAspectRatio','none');
+      for(const d of row.temporal?.detections||row.detections||[]){const rect=document.createElementNS(svg.namespaceURI,'rect'),[x,y,xx,yy]=d.box;for(const [k,v]of Object.entries({x:x*1000,y:y*1000,width:(xx-x)*1000,height:(yy-y)*1000,fill:'none',stroke:d.motion?.state==='moving'?'#b8ed86':d.motion?.state==='stationary'?'#69b9ff':'#efbd7b','stroke-width':3}))rect.setAttribute(k,v);svg.append(rect);}preview.append(svg);renderVectorLayer(preview,{detections:row.temporal?.detections||row.detections||[]},false,row.width||640,row.height||400);
+      caption.textContent=`Cached playback · ${((i-1)%rows.length)+1}/${rows.length} · ${new Date(row.observedAt).toLocaleString()}`;timer=setTimeout(show,matchMedia('(prefers-reduced-motion: reduce)').matches?1800:700);
+    };await show();
+  };
+  card.addEventListener('pointerenter',start);card.addEventListener('pointerleave',stop);card.addEventListener('focusin',start);card.addEventListener('focusout',e=>{if(!card.contains(e.relatedTarget))stop();});
+  // A tap on the photo also previews on touch devices; controls keep their actions.
+  card.addEventListener('click',e=>{if(e.pointerType==='touch'&&e.target.closest('.picture'))card.dataset.previewing?stop():start();});
+}
+
+let motionDownloadURL=null;
+function renderTemporalLog(){
+  let pane=$('temporal-log');if(!pane){pane=node('details');pane.id='temporal-log';$('detail-pane').append(pane);}
+  const rows=[...archiveMetadata.values()].filter(r=>r.cameraId===selectedCamera&&r.observedAt<=currentTime()&&r.temporal).sort((a,b)=>a.observedAt-b.observedAt);
+  const version=signature([selectedCamera,rows.map(r=>[r.hash,r.temporal.log])]);if(pane.dataset.version===version)return;pane.dataset.version=version;
+  const summary=node('summary',`Saved motion evidence · ${rows.length} observations`),explain=node('p','Three-frame appearance matching with a stable-background gate. Blue means persistent position across distinct images; it does not prove the same vehicle stayed continuously. Green vectors require two consistent steps ≤15 seconds apart. Longer gaps retain occupancy and turnover evidence; individual movement remains unresolved.');
+  const list=node('ol');for(const row of rows.slice(-20).reverse()){const l=row.temporal.log;list.append(node('li',`${new Date(row.observedAt).toLocaleString()} · ${l.status.replaceAll('_',' ')} · ${l.states.moving} moving / ${l.states.stationary} persistent position / ${l.states.unknown} unresolved${l.turnover?` · ${l.turnover.arrivals} unmatched arrivals / ${l.turnover.departures} unmatched departures`:''}`));}
+  if(motionDownloadURL)URL.revokeObjectURL(motionDownloadURL);motionDownloadURL=URL.createObjectURL(new Blob([JSON.stringify(rows.map(r=>({cameraId:r.cameraId,hash:r.hash,...r.temporal})),null,2)],{type:'application/json'}));const download=node('a','Download camera motion log (JSON)');download.href=motionDownloadURL;download.download=`camera-${selectedCamera}-motion.json`;pane.replaceChildren(summary,explain,list,download);
+}

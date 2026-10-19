@@ -35,3 +35,4 @@ test('description distinguishes image displacement from speed', () => {
   assert.match(text, /12.8 analysis px \/ 0.10s/);
   assert.match(context.motionDescription({motion:{state:'unknown'}}), /no reliable vector/);
 });
+test('three-frame vectors require stable background evidence and bounded observation gaps',()=>{const d={motion:{state:'moving',vector:[.02,0],gap_seconds:10,evidence_kind:'three_frame_appearance',evidence:{frames:3,background_stable:true}}};assert.equal(context.validVector(d),true);d.motion.evidence.background_stable=false;assert.equal(context.validVector(d),false);d.motion.evidence.background_stable=true;d.motion.gap_seconds=90;assert.equal(context.validVector(d),false);});

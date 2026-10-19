@@ -3,7 +3,7 @@ function validVector(d) {
   const m = d.motion;
   return m?.state === 'moving' && Array.isArray(m.vector) && m.vector.length === 2 &&
     m.vector.every(Number.isFinite) && Math.hypot(...m.vector) > 0 &&
-    Number.isFinite(m.gap_seconds) && m.gap_seconds > 0 && m.gap_seconds <= 2;
+    Number.isFinite(m.gap_seconds) && m.gap_seconds > 0 && (m.gap_seconds <= 2 || (m.evidence_kind === 'three_frame_appearance' && m.evidence?.frames >= 3 && m.evidence?.background_stable && m.gap_seconds <= 15));
 }
 function vectorGeometry(box, vector, width, height, gain) {
   if (![...box, ...vector, width, height, gain].every(Number.isFinite) || width <= 0 || height <= 0 || gain <= 0) return null;
@@ -31,7 +31,7 @@ function screenDirection(vector, width = 640, height = 400) {
   return ['→ right', '↘ down-right', '↓ down', '↙ down-left', '← left', '↖ up-left', '↑ up', '↗ up-right'][Math.floor((angle + 22.5) / 45) % 8];
 }
 function motionDescription(d) {
-  if (!validVector(d)) return d.motion?.state === 'stationary' ? 'Stationary in measured pair' : 'Unknown · no reliable vector';
+  if (!validVector(d)) return d.motion?.state === 'stationary' ? (d.motion?.evidence_kind === 'three_frame_appearance' ? 'Persistent position across three distinct frames' : 'Stationary in measured pair') : 'Unknown · no reliable vector';
   const m = d.motion, displacement = m.evidence?.displacement_px;
   const label = m.direction ? ({right:'→ right','down-right':'↘ down-right',down:'↓ down','down-left':'↙ down-left',left:'← left','up-left':'↖ up-left',up:'↑ up','up-right':'↗ up-right'}[m.direction] || m.direction) : screenDirection(m.vector);
   return `${label} on image · ${Number.isFinite(displacement) ? displacement.toFixed(1) + ' analysis px / ' : ''}${m.gap_seconds.toFixed(2)}s${m.heading != null ? ' · ' + m.heading + '° calibrated' : ''}`;
