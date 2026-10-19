@@ -567,7 +567,7 @@ setPower(powerProfile.level);refresh(true);
 // Temporal work runs serially with the same device budget as inference.
 const temporalPending=new Set(),hoverCards=new WeakSet();let temporalRunning=false;
 function scheduleTemporal(row){
-  if(!row.detections||row.temporal||!isLive())return;
+  if(!row.detections||!isLive())return;
   temporalPending.add(row.cameraId);setTimeout(runTemporal,0);
 }
 async function runTemporal(){
@@ -575,7 +575,7 @@ async function runTemporal(){
   temporalRunning=true;const id=temporalPending.values().next().value;temporalPending.delete(id);
   try{
     const rows=[...archiveMetadata.values()].filter(r=>r.cameraId===id&&r.detections).sort((a,b)=>a.observedAt-b.observedAt).slice(-3),latest=rows.at(-1);
-    if(latest&&!latest.temporal){const frames=[];
+    if(latest&&signature(latest.temporal?.log?.frameHashes)!==signature(rows.map(r=>r.hash))){const frames=[];
       for(const row of rows){const blob=await photoArchive.photo(row.hash);if(!blob)continue;frames.push({...row,...await TemporalTraffic.features(blob,row.detections)});}
       if(frames.length){const result=TemporalTraffic.analyze(frames);await photoArchive.saveTemporal(latest.key,result);queueViewPaint();}
     }
