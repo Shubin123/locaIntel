@@ -81,7 +81,54 @@ def build(checkpoint, output=Path('web/models')):
     print(target, manifest['bytes'], manifest['sha256'])
 
 
+def build_batched_gpu(checkpoint, output=Path('web/models')):
+    """Keep the v1 checker intact for older tabs; export a two-view GPU graph."""
+    import onnx
+    from onnxconverter_common import float16
+    torch.set_num_threads(2)
+    model=VehicleViewModel();model.load_state_dict(torch.load(checkpoint,map_location='cpu',weights_only=True));model.eval()
+    full=Path('.cache/cfv-facing-fp32-batch2.onnx')
+    torch.onnx.export(model,torch.zeros(2,3,224,224),full,input_names=['image'],output_names=['view_logits','angle_fraction'],opset_version=17,dynamo=False)
+    half=float16.convert_float_to_float16(onnx.load(full),keep_io_types=True)
+    cast=next(node for node in half.graph.node if node.op_type=='Cast' and 'view_logits' in node.output)
+    for node in half.graph.node:
+        if node is not cast:
+            for index,name in enumerate(node.input):
+                if name=='view_logits':node.input[index]=cast.input[0]
+    onnx.checker.check_model(half,full_check=True)
+    target=output/'cfv-convnext-facing-batch2-fp16.onnx';onnx.save(half,target);data=target.read_bytes()
+    manifest_path=output/'vehicle-facing-v2.json'
+    manifest=json.loads((manifest_path if manifest_path.exists() else output/'vehicle-facing-v1.json').read_text())
+    manifest['version']='cfv-facing-cascade-v2'
+    manifest['gpu']={'file':target.name,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),
+                     'precision':'FP16; float32 input/output','requires':'WebGPU shader-f16','batch':2}
+    # Full precision avoids CPU-only dynamic INT8 operators on older GPUs.
+    # Keep each external weight shard below GitHub's per-file size limit.
+    full_model=onnx.load(full);parts=[];part=None;part_size=0;limit=48*1024*1024
+    for tensor in full_model.graph.initializer:
+        if not tensor.raw_data:continue
+        raw=tensor.raw_data
+        if part is None or part_size+len(raw)>limit:
+            if part:part.close()
+            name=f'cfv-facing-fp32-weights-{len(parts):02d}.bin';parts.append(name);part=(output/name).open('wb');part_size=0
+        onnx.external_data_helper.set_external_data(tensor,location=parts[-1],offset=part_size,length=len(raw))
+        part.write(raw);part_size+=len(raw);tensor.ClearField('raw_data');tensor.data_location=onnx.TensorProto.EXTERNAL
+    if part:part.close()
+    fp32_target=output/'cfv-convnext-facing-batch2-fp32.onnx';onnx.save(full_model,fp32_target)
+    onnx.checker.check_model(str(fp32_target),full_check=True)
+    graph=fp32_target.read_bytes()
+    external=[]
+    for name in parts:
+        chunk=(output/name).read_bytes();external.append({'file':name,'path':name,'bytes':len(chunk),'sha256':hashlib.sha256(chunk).hexdigest()})
+    manifest['gpu32']={'file':fp32_target.name,'bytes':len(graph),'sha256':hashlib.sha256(graph).hexdigest(),
+                       'precision':'FP32; WebGPU without shader-f16','batch':2,'externalData':external}
+    manifest_path.write_text(json.dumps(manifest,indent=2)+'\n')
+    print(target,len(data),manifest['gpu']['sha256'])
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoint', type=Path, required=True)
-    build(parser.parse_args().checkpoint)
+    parser.add_argument('--batched-gpu-only',action='store_true')
+    args=parser.parse_args()
+    (build_batched_gpu if args.batched_gpu_only else build)(args.checkpoint)

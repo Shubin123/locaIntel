@@ -9,3 +9,15 @@ test('crop inference is serial, deduplicated, paced, and pauses queued work',asy
 const q=new f.CropOrientation({workerFactory:()=>new Worker(),prepareCrop:async()=>({input:new Float32Array(1)}),delayMs:30,isPaused:()=>paused,onResult:(source,index,r)=>records.push({source,index,r})}),source={cameraId:'1',hash:'a'},d={label:'car',box:[.1,.1,.2,.2]};q.request(source,d,0);q.request(source,d,0);q.request({...source,hash:'b'},d,1);await new Promise(r=>setTimeout(r,10));assert.equal(calls,0);paused=false;q.wake();while(records.length<2)await new Promise(r=>setTimeout(r,10));assert.equal(calls,2);assert.equal(peak,1);assert(starts[1]-starts[0]>=25);assert.equal(records[1].index,1);assert.equal(records[0].r.fingerprint,f.fingerprint(d));});
 test('bright mirror or windshield reflections in the upper crop are not headlight pairs',()=>{const data=new Uint8ClampedArray(100*60*4);for(const x of [20,72])for(let y=16;y<20;y++)for(let xx=x;xx<x+4;xx++)for(let c=0;c<3;c++)data[(y*100+xx)*4+c]=240;assert.equal(f.lampPairs(data,100,60).type,'none');});
 test('identical crop pixels across new source hashes reuse facing but refresh lamp coordinates',async()=>{let calls=0;const records=[];class Worker{postMessage(m){calls++;queueMicrotask(()=>this.onmessage({data:{id:m.id,result:{state:'estimated',facing:'toward_camera',version:f.VERSION,lights:{points:[[.2,.3]]}}}}));}terminate(){}}const q=new f.CropOrientation({workerFactory:()=>new Worker(),delayMs:0,prepareCrop:async source=>({input:new Float32Array(1),visualKey:'same-exact-pixels',lights:{points:[[source.hash==='a'?.2:.4,.3]]}}),onResult:(s,i,r)=>records.push(r)}),d={label:'car',box:[.1,.1,.2,.2]};q.request({cameraId:'1',hash:'a'},d,0);while(records.length<1)await new Promise(r=>setTimeout(r,2));q.request({cameraId:'1',hash:'b'},d,0);while(records.length<2)await new Promise(r=>setTimeout(r,2));assert.equal(calls,1);assert.equal(records[1].reused_exact_crop,true);assert.equal(records[1].lights.points[0][0],.4);});
+test('fast facing requires calibrated confidence, exact mirrored view, and stable angle vectors',()=>{
+ const manifest={...m,fast:{policy:{temperature:1,threshold:.9,mirror_max_error:25}}};
+ const pair=(a,b)=>[...logits(a),...logits(b)];
+ const vector=a=>[Math.sin(a*Math.PI/180),Math.cos(a*Math.PI/180)];
+ const good=f.fastClassify(pair(1,7),[...vector(45),...vector(315)],manifest);
+ assert.equal(good.state,'estimated');assert.equal(good.facing,'toward_camera');assert.equal(good.image_direction,'down-right');assert.equal(good.measured_motion,false);
+ for(const [scores,vectors]of [[pair(1,1),[...vector(45),...vector(45)]],[Array(16).fill(0),[...vector(45),...vector(315)]],[pair(1,7),[0,0,0,0]],[pair(1,7),[...vector(45),...vector(280)]]]){
+  const result=f.fastClassify(scores,vectors,manifest);assert.equal(result.state,'unknown');assert.equal(result.image_direction,undefined);
+ }
+ assert.equal(f.fastClassify(pair(0,0),[...vector(0),...vector(0)],manifest,{type:'taillight_pair'}).state,'unknown');
+ assert.throws(()=>f.fastClassify([NaN],[],manifest),/Invalid/);
+});

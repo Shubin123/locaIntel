@@ -1,6 +1,6 @@
 /* Vehicle facing from isolated crops. These estimates never set motion.state. */
 (function(root){
-  const VERSION='cfv-convnext-facing-v1',SIZE=224,supported=new Set(['car']);
+  const VERSION='cfv-facing-cascade-v2',SIZE=224,supported=new Set(['car']);
   const fingerprint=d=>JSON.stringify([d.label,d.box]);
   function lampPairs(rgba,width,height){
     const find=kind=>{
@@ -48,6 +48,18 @@
     if(result.mirror_consistent&&p.probabilities[p.index]>=.65){result.image_direction=['down','down-right','right','up-right','up','up-left','left','down-left'][p.index];result.facing_glyph=['↓','↘','→','↗','↑','↖','←','↙'][p.index];if(p.group==='side')result.facing=p.index===2?'image_right':'image_left';}
     return result;
   }
+  function fastClassify(logits,vectors,manifest,lights={type:'none'}){
+    const policy=manifest.fast?.policy;
+    if(!policy||logits.length!==16||vectors.length!==4||!vectors.every(Number.isFinite)||!logits.every(Number.isFinite))throw Error('Invalid fast facing output or policy');
+    const temperature=policy.temperature,threshold=policy.threshold;
+    if(!(temperature>0)||!(threshold>0&&threshold<=1))throw Error('Invalid fast facing policy');
+    const angle=offset=>((Math.atan2(vectors[offset],vectors[offset+1])*180/Math.PI+360)%360)/360;
+    const first=logits.slice(0,8).map(v=>v/temperature),second=logits.slice(8).map(v=>v/temperature),a=angle(0),b=angle(2);
+    const p=decode(first,a),flip=decode(second,b),result=classify(first,a,manifest,lights,{logits:second,angle:b});
+    const strong=Math.hypot(...vectors.slice(0,2))>=.1&&Math.hypot(...vectors.slice(2))>=.1&&p.probabilities[p.index]>=threshold&&flip.probabilities[flip.index]>=threshold&&flip.index===(8-p.index)%8&&circularError(p.angle,p.index*45)<=45&&circularError(flip.angle,(360-p.angle)%360)<=policy.mirror_max_error;
+    if(!strong)return {...result,state:'unknown',facing:'unknown',image_direction:undefined,facing_glyph:undefined,reason:'fast_model_requires_full_resolution_check'};
+    return {...result,method:'cfv_low_resolution_supervised_mobilenet_mirror_verified',calibration_temperature:temperature};
+  }
   async function prepare(source,d){
     const image=await createImageBitmap(source.blob);
     try{
@@ -66,7 +78,7 @@
     }finally{image.close();}
   }
   class CropOrientation{
-    constructor({workerFactory=()=>new Worker('orientation-worker.js?v=gpu-road-1'),prepareCrop=prepare,onChange=()=>{},onResult=()=>{},isPaused=()=>false,isWanted=()=>true,delayMs=350,timeout=90000}={}){
+    constructor({workerFactory=()=>new Worker('orientation-worker.js?v=facing-v2'),prepareCrop=prepare,onChange=()=>{},onResult=()=>{},isPaused=()=>false,isWanted=()=>true,delayMs=350,timeout=90000}={}){
       Object.assign(this,{workerFactory,prepareCrop,onChange,onResult,isPaused,isWanted,delayMs,timeout});this.version=VERSION;this.entries=new Map();this.visualEntries=new Map();this.queue=[];this.running=false;this.worker=null;this.serial=0;this.waiter=null;this.cooldown=null;this.phase='idle';
     }
     key(source,d){return source.cameraId+':'+source.hash+':'+fingerprint(d);}
@@ -75,7 +87,7 @@
       const key=this.key(source,d);if(this.entries.has(key)){if(priority){const task=this.queue.find(t=>t.key===key);if(task){task.priority=Number(priority)||0;this.queue.sort((a,b)=>b.priority-a.priority);}}return;}
       this.entries.set(key,{state:'queued',version:VERSION});const task={source,d,index,key,priority:Number(priority)||0};this.queue.push(task);this.queue.sort((a,b)=>b.priority-a.priority);this.pump();
     }
-    ensureWorker(){if(this.worker)return;this.worker=this.workerFactory();this.worker.onmessage=({data})=>{if(data.phase){this.phase=data.phase;if(data.backend)this.backend=data.backend;this.onChange();return;}const waiter=this.waiter;if(!waiter||data.id!==waiter.id)return;clearTimeout(waiter.timer);this.waiter=null;if(data.error)waiter.reject(Error(data.error));else waiter.resolve(data.result);};this.worker.onerror=e=>this.fail(Error(e.message||'Facing worker failed'));}
+    ensureWorker(){if(this.worker)return;this.worker=this.workerFactory();this.worker.onmessage=({data})=>{if(data.phase){this.phase=data.phase;if(data.backend){this.backend=data.backend;this.fallback=data.fallback||null;}if(data.path)this.path=data.path;if(data.model)this.model=data.model;this.onChange();return;}const waiter=this.waiter;if(!waiter||data.id!==waiter.id)return;clearTimeout(waiter.timer);this.waiter=null;if(data.error)waiter.reject(Error(data.error));else waiter.resolve(data.result);};this.worker.onerror=e=>this.fail(Error(e.message||'Facing worker failed'));}
     fail(error){if(this.waiter){clearTimeout(this.waiter.timer);this.waiter.reject(error);this.waiter=null;}this.worker?.terminate();this.worker=null;this.phase='error';}
     infer(prepared){this.ensureWorker();const id=++this.serial;return new Promise((resolve,reject)=>{this.waiter={id,resolve,reject,timer:setTimeout(()=>this.fail(Error('Facing model timed out')),this.timeout)};try{this.worker.postMessage({id,...prepared},[prepared.input.buffer]);}catch(e){this.fail(e);}});}
     async pump(){
@@ -84,12 +96,12 @@
       let skip=false;this.running=true;this.entries.set(task.key,{state:'processing',version:VERSION});this.onChange();
       try{const prepared=await this.prepareCrop(task.source,task.d),visualKey=prepared.visualKey?task.source.cameraId+':'+prepared.visualKey:null,cached=visualKey?this.visualEntries.get(visualKey):null;skip=!!prepared.skip||!!cached;const result=prepared.skip||(cached?{...cached,lights:prepared.lights,crop:prepared.crop,inference_ms:0,backend:'cache',reused_exact_crop:true}:await this.infer(prepared));if(visualKey&&!cached&&!prepared.skip){this.visualEntries.set(visualKey,result);if(this.visualEntries.size>256)this.visualEntries.delete(this.visualEntries.keys().next().value);}if(Number.isFinite(result.inference_ms))this.lastInferenceMs=result.inference_ms;this.lastReused=!!result.reused_exact_crop;const record={...result,fingerprint:fingerprint(task.d),observedAt:Date.now()};this.entries.set(task.key,record);this.onResult(task.source,task.index,record);}
       catch(error){this.entries.set(task.key,{version:VERSION,state:'error',reason:error.message,fingerprint:fingerprint(task.d)});this.phase='error';}
-      finally{this.running=false;while(this.entries.size>512){const key=[...this.entries].find(([,v])=>!['queued','processing'].includes(v.state))?.[0];if(!key)break;this.entries.delete(key);}this.onChange();if(this.queue.length)this.cooldown=setTimeout(()=>{this.cooldown=null;this.pump();},skip?0:this.backend==='webgpu'?this.delayMs*.15:this.delayMs);}
+      finally{this.running=false;while(this.entries.size>512){const key=[...this.entries].find(([,v])=>!['queued','processing'].includes(v.state))?.[0];if(!key)break;this.entries.delete(key);}this.onChange();if(this.queue.length)this.cooldown=setTimeout(()=>{this.cooldown=null;this.pump();},skip?0:this.backend==='webgpu'?this.delayMs*.03:this.delayMs);}
     }
     setBudget({delayMs=this.delayMs}={}){this.delayMs=Math.max(0,delayMs);if(this.cooldown){clearTimeout(this.cooldown);this.cooldown=null;}this.pump();}
     wake(){this.pump();}
     retryFailed(){for(const [k,v]of this.entries)if(v.state==='error')this.entries.delete(k);if(this.phase==='error'){this.worker?.terminate();this.worker=null;this.phase='idle';}}
   }
   function description(o){if(!o)return 'Facing: waiting for crop analysis';if(o.state==='queued'||o.state==='processing')return 'Facing: analyzing isolated crop…';if(o.state==='error')return 'Facing unavailable: '+o.reason;if(o.state!=='estimated')return 'Facing unresolved · '+(o.reason||'insufficient evidence').replaceAll('_',' ');return 'Estimated facing: '+({toward_camera:'toward camera · front visible',away_from_camera:'away from camera · rear visible',image_left:'← left on image',image_right:'→ right on image',side_view:'side view · nose direction unresolved'}[o.facing]||o.facing)+(o.facing_glyph?' · approximate image facing '+o.facing_glyph:'')+(o.reason==='model_and_light_pair_agree'?' · light pair agrees':'');}
-  root.VehicleFacing={VERSION,SIZE,fingerprint,lampPairs,circularError,decode,classify,prepare,CropOrientation,description};
+  root.VehicleFacing={VERSION,SIZE,fingerprint,lampPairs,circularError,decode,classify,fastClassify,prepare,CropOrientation,description};
 })(globalThis);

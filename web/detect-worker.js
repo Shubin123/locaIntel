@@ -1,4 +1,4 @@
-importScripts('inference-runtime.js?v=gpu-road-1','detector.js?v=gpu-road-1');
+importScripts('inference-runtime.js?v=facing-v2','detector.js?v=gpu-road-1');
 let sessionPromise;
 async function session(){
   if(!sessionPromise){self.postMessage({phase:'loading'});sessionPromise=new ModelRuntime.Session({file:'models/yolo11n.onnx'}).initialize().catch(error=>{sessionPromise=null;throw error;});}return sessionPromise;

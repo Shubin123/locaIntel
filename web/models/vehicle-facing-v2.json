@@ -1,0 +1,98 @@
+{
+  "version": "cfv-facing-cascade-v2",
+  "model": "CFV ConvNeXt-Small (INT8 dense / FP32 convolution)",
+  "source": "https://huggingface.co/fort-cyber/Car-orientation-image/tree/a8fddadf6af25a6f53ed6a449f74e4106c9c34a2",
+  "revision": "a8fddadf6af25a6f53ed6a449f74e4106c9c34a2",
+  "sha256": "a936d50e692189694108aea3f0024119ebe030d792d9b7d5974e93de0ae8a0a6",
+  "bytes": 57976957,
+  "checkpoint_sha256": "26bd9e4eff8a4cfa3a264223ecced760f2fb3d1f29dc68f4e23b1b27babcd91d",
+  "input": {
+    "size": 224,
+    "rescale": 0.00392156862745098,
+    "normalize": false,
+    "crop": "isolated vehicle resized to square, as in CFV prepare_data.py"
+  },
+  "views": [
+    "front",
+    "front_left",
+    "left_side",
+    "rear_left",
+    "rear",
+    "rear_right",
+    "right_side",
+    "front_right"
+  ],
+  "angle_convention": "CFV relative view: front=0, left-side=90, rear=180, right-side=270. Not a compass heading.",
+  "citation": "Catruna et al. Car Full View Dataset: Fine-Grained Predictions of Car Orientation from Images. Electronics 12(24), 4947 (2023). https://doi.org/10.3390/electronics12244947",
+  "limitations": "Trained on car photographs, not DriveBC. Car crops only. Scores are uncalibrated. Facing is not measured motion.",
+  "gpu": {
+    "file": "cfv-convnext-facing-batch2-fp16.onnx",
+    "bytes": 100738451,
+    "sha256": "1bf61d3f5fc349db236cf967aa4705ff630e9eddd52f1d760d0b5c828c546c98",
+    "precision": "FP16; float32 input/output",
+    "requires": "WebGPU shader-f16",
+    "batch": 2
+  },
+  "fast": {
+    "file": "cfv-mobilenet-facing-v2.onnx",
+    "model": "CFV MobileNetV3-Large, low-resolution fine-tuned",
+    "bytes": 16852985,
+    "sha256": "772081db5e78d6ca5707fb9bea7dd0a1ff0bf5b69a2a2c2d66f77f72d9cfa804",
+    "batch": 2,
+    "input_size": 224,
+    "internal_size": 160,
+    "output": "8 view logits + sine/cosine angle vector",
+    "precision": "FP32, GPU without shader-f16; WASM fallback",
+    "policy": {
+      "threshold": 0.95,
+      "temperature": 0.9233759641647339,
+      "mirror_max_error": 25,
+      "validation_accepted": 1463,
+      "validation_total": 3430,
+      "count": 1463,
+      "eight_view_accuracy": 0.9856459330143541,
+      "mean_angle_error": 4.900612477154579
+    },
+    "training_report": "facing-training-v2.json",
+    "checkpoint_sha256": "086950f1c72e005d1f1523ad6e82f535438840531154c0075a8fe27cbd17c97d"
+  },
+  "gpu32": {
+    "file": "cfv-convnext-facing-batch2-fp32.onnx",
+    "bytes": 201960,
+    "sha256": "73830aae105c5447c50abbf213d076be31e8f9493c1ab9bec459afb59981cd4e",
+    "precision": "FP32; WebGPU without shader-f16",
+    "batch": 2,
+    "externalData": [
+      {
+        "file": "cfv-facing-fp32-weights-00.bin",
+        "path": "cfv-facing-fp32-weights-00.bin",
+        "bytes": 49970628,
+        "sha256": "b15aa771ef00d7c7bb7cb40d976345a4ebc0e7230a3422d22204939a9cd55715"
+      },
+      {
+        "file": "cfv-facing-fp32-weights-01.bin",
+        "path": "cfv-facing-fp32-weights-01.bin",
+        "bytes": 49560576,
+        "sha256": "93fc0cd397d3de0cd3824042cad6b7c9fc3b5862115d2d947b3debafdb398aca"
+      },
+      {
+        "file": "cfv-facing-fp32-weights-02.bin",
+        "path": "cfv-facing-fp32-weights-02.bin",
+        "bytes": 44841984,
+        "sha256": "b2c705857c4b7810032149facf1192b2d5f6d10ab70c7bef3628ccbb502a6a30"
+      },
+      {
+        "file": "cfv-facing-fp32-weights-03.bin",
+        "path": "cfv-facing-fp32-weights-03.bin",
+        "bytes": 47192064,
+        "sha256": "bacd3cef18d1a6f4b01c68432f44368d92e141023a7366c7e27437e3cc25e597"
+      },
+      {
+        "file": "cfv-facing-fp32-weights-04.bin",
+        "path": "cfv-facing-fp32-weights-04.bin",
+        "bytes": 9440256,
+        "sha256": "b20266820c0ac053c218a7545a1476c2258b87f80b5fe2d39af9b01db3a5b6d0"
+      }
+    ]
+  }
+}

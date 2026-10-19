@@ -53,7 +53,7 @@
     } finally { image.close?.(); }
   }
   class BrowserDetector {
-    constructor({ workerFactory = () => new Worker('detect-worker.js?v=gpu-road-1'), prepare = preprocess, onChange = () => {}, onResult = () => {}, isWanted = () => true, isPaused = () => false, delayMs = 0, timeout = 120000 } = {}) {
+    constructor({ workerFactory = () => new Worker('detect-worker.js?v=facing-v2'), prepare = preprocess, onChange = () => {}, onResult = () => {}, isWanted = () => true, isPaused = () => false, delayMs = 0, timeout = 120000 } = {}) {
       Object.assign(this, { workerFactory, prepare, onChange, onResult, isWanted, isPaused, delayMs, timeout });
       this.entries = new Map(); this.pending = new Map(); this.queue = []; this.worker = null; this.waiting = new Map(); this.serial = 0; this.running = false; this.state = 'idle';this.modelVersion=MODEL_VERSION; this.cooldown = null;
     }

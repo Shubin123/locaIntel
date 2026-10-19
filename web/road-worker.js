@@ -1,4 +1,4 @@
-importScripts('inference-runtime.js?v=gpu-road-1','road.js?v=gpu-road-1');
+importScripts('inference-runtime.js?v=facing-v2','road.js?v=gpu-road-1');
 let ready;
 async function load(){if(!ready)ready=(async()=>{self.postMessage({phase:'loading'});const response=await fetch('models/road-v1.json');if(!response.ok)throw Error('Road manifest HTTP '+response.status);const manifest=await response.json(),model=await new ModelRuntime.Session({file:'models/'+manifest.file,sha256:manifest.sha256}).initialize();return {manifest,model};})().catch(error=>{ready=null;throw error;});return ready;}
 self.onmessage=async({data})=>{try{
