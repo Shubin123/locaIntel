@@ -1,0 +1,25 @@
+{
+  "version": "segformer-b0-road-256-v1",
+  "model": "nvidia/segformer-b0-finetuned-cityscapes-1024-1024",
+  "revision": "21b3847fae21ddee674abd31129307b6a1235bd9",
+  "source": "https://huggingface.co/nvidia/segformer-b0-finetuned-cityscapes-1024-1024/tree/21b3847fae21ddee674abd31129307b6a1235bd9",
+  "file": "segformer-b0-road-256.onnx",
+  "sha256": "a737a5e267447d8e56ce7833708f4079e5e319c79ecba4af8b928dc6eb9d94d3",
+  "bytes": 15038670,
+  "input": {
+    "size": 256,
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ]
+  },
+  "output_size": 64,
+  "road_class": 0,
+  "limitations": "Predicted road surface; no lane travel rules, measured movement, speed or surveyed compass heading."
+}

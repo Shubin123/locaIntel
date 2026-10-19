@@ -85,6 +85,11 @@
       if(row&&JSON.stringify([row.detections?.[index]?.label,row.detections?.[index]?.box])===result.fingerprint){row.facing={...row.facing,version:result.version,byDetection:{...row.facing?.byDetection,[index]:result}};store.put(row);}await done;if(row)this.onChange({row,removedKeys:[]});return row;
     });}
 
+    saveRoadScene(key,result){return this.enqueue(async()=>{
+      const db=await this.open(),tx=db.transaction('frames','readwrite'),done=complete(tx),store=tx.objectStore('frames'),row=await request(store.get(key));
+      if(row){row.roadScene=result;store.put(row);}await done;if(row)this.onChange({row,removedKeys:[]});return row;
+    });}
+
     async metadata(){await this.chain;const db=await this.open(),tx=db.transaction('frames','readonly');return request(tx.objectStore('frames').getAll());}
     async photo(hash){const db=await this.open(),tx=db.transaction('photos','readonly');return (await request(tx.objectStore('photos').get(hash)))?.blob||null;}
     prune(){return this.enqueue(()=>this.pruneNow());}

@@ -53,7 +53,7 @@
     } finally { image.close?.(); }
   }
   class BrowserDetector {
-    constructor({ workerFactory = () => new Worker('detect-worker.js?v=monitor-1'), prepare = preprocess, onChange = () => {}, onResult = () => {}, isWanted = () => true, isPaused = () => false, delayMs = 0, timeout = 120000 } = {}) {
+    constructor({ workerFactory = () => new Worker('detect-worker.js?v=gpu-road-1'), prepare = preprocess, onChange = () => {}, onResult = () => {}, isWanted = () => true, isPaused = () => false, delayMs = 0, timeout = 120000 } = {}) {
       Object.assign(this, { workerFactory, prepare, onChange, onResult, isWanted, isPaused, delayMs, timeout });
       this.entries = new Map(); this.pending = new Map(); this.queue = []; this.worker = null; this.waiting = new Map(); this.serial = 0; this.running = false; this.state = 'idle';this.modelVersion=MODEL_VERSION; this.cooldown = null;
     }
@@ -77,7 +77,7 @@
         const waiter = this.waiting.get(data.id); if (!waiter) return;
         this.waiting.delete(data.id); clearTimeout(waiter.timer);
         if (data.error) { this.state = 'error'; waiter.reject(Error(data.error)); }
-        else { this.state = 'ready'; waiter.resolve(data); }
+        else { this.state = 'ready';this.backend=data.backend||'wasm';this.lastInferenceMs=data.inference_ms; waiter.resolve(data); }
       };
       this.worker.onerror = error => {
         this.state = 'error';
@@ -100,9 +100,9 @@
       try {
         if (!this.isWanted(source.hash)) { this.entries.delete(source.hash); task.resolve({ status: 'skipped' }); return; }
         didWork=true;this.entries.set(source.hash, { status: 'processing' }); this.onChange();
-        const { detections } = await this.infer(await this.prepare(source));
+        const { detections,backend,inference_ms,fallback } = await this.infer(await this.prepare(source));
         const counts = {}; for (const d of detections) counts[d.label] = (counts[d.label] || 0) + 1;
-        const result = { status: 'ready', hash: source.hash, version:MODEL_VERSION, detections, counts, observed: new Date().toISOString(), model: 'YOLO11n / ONNX browser' };
+        const result = { status: 'ready', hash: source.hash, version:MODEL_VERSION, detections, counts, observed: new Date().toISOString(), model: 'YOLO11n / ONNX browser',backend:backend||'wasm',inference_ms,fallback };
         this.entries.set(source.hash, result); this.onResult(source,result); task.resolve(result);
       } catch (error) {
         const result = { status: 'error', error: error.message, hash: source.hash }; this.entries.set(source.hash, result); task.resolve(result);

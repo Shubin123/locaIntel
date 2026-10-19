@@ -24,5 +24,12 @@
   ],
   "angle_convention": "CFV relative view: front=0, left-side=90, rear=180, right-side=270. Not a compass heading.",
   "citation": "Catruna et al. Car Full View Dataset: Fine-Grained Predictions of Car Orientation from Images. Electronics 12(24), 4947 (2023). https://doi.org/10.3390/electronics12244947",
-  "limitations": "Trained on car photographs, not DriveBC. Car crops only. Scores are uncalibrated. Facing is not measured motion."
+  "limitations": "Trained on car photographs, not DriveBC. Car crops only. Scores are uncalibrated. Facing is not measured motion.",
+  "gpu": {
+    "file": "cfv-convnext-facing-fp16.onnx",
+    "bytes": 100738451,
+    "sha256": "27c3e795952052c53a8dc64b5a5286632c664508713eae5ec25b2b2e221b547a",
+    "precision": "FP16; float32 input/output",
+    "requires": "WebGPU shader-f16"
+  }
 }

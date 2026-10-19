@@ -1,7 +1,7 @@
 """Export the pretrained CFV ConvNeXt-Small multitask vehicle-view model.
 
 Optional dependencies: timm>=0.9,<1.1, onnx>=1.14,<1.18,
-onnxruntime>=1.19,<1.20. Checkpoint: Apache-2.0, fort-cyber authors.
+onnxruntime>=1.19,<1.20, onnxconverter-common>=1.14,<1.17. Checkpoint: Apache-2.0, fort-cyber authors.
 Architecture follows https://github.com/fort-cyber/car-orientation
 This exports existing trained weights; it does not train on DriveBC images.
 """
@@ -57,6 +57,24 @@ def build(checkpoint, output=Path('web/models')):
                 'views': VIEWS, 'angle_convention': 'CFV relative view: front=0, left-side=90, rear=180, right-side=270. Not a compass heading.',
                 'citation': 'Catruna et al. Car Full View Dataset: Fine-Grained Predictions of Car Orientation from Images. Electronics 12(24), 4947 (2023). https://doi.org/10.3390/electronics12244947',
                 'limitations': 'Trained on car photographs, not DriveBC. Car crops only. Scores are uncalibrated. Facing is not measured motion.'}
+    # Use the full-resolution model on GPUs. Preserve float32 IO while keeping
+    # the internal view logits in FP16 when reused by the angle head.
+    import onnx
+    from onnxconverter_common import float16
+    half = float16.convert_float_to_float16(onnx.load(full), keep_io_types=True)
+    cast = next(node for node in half.graph.node if node.op_type == 'Cast' and 'view_logits' in node.output)
+    for node in half.graph.node:
+        if node is cast:
+            continue
+        for index, name in enumerate(node.input):
+            if name == 'view_logits':
+                node.input[index] = cast.input[0]
+    onnx.checker.check_model(half, full_check=True)
+    gpu_target = output / 'cfv-convnext-facing-fp16.onnx'
+    onnx.save(half, gpu_target)
+    gpu_bytes = gpu_target.read_bytes()
+    manifest['gpu'] = {'file': gpu_target.name, 'bytes': len(gpu_bytes), 'sha256': hashlib.sha256(gpu_bytes).hexdigest(),
+                       'precision': 'FP16; float32 input/output', 'requires': 'WebGPU shader-f16'}
     (output / 'vehicle-facing-v1.json').write_text(json.dumps(manifest, indent=2) + '\n')
     license_url = 'https://raw.githubusercontent.com/fort-cyber/car-orientation/master/LICENSE'
     (output / 'CFV-LICENSE').write_bytes(urllib.request.urlopen(license_url, timeout=30).read())

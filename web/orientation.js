@@ -56,35 +56,35 @@
       if(!supported.has(d.label)||w<20||h<16||w*h<600||x<=.001||y<=.001||xx>=.999||yy>=.999)return {skip:{version:VERSION,state:'unknown',facing:'unknown',reason:!supported.has(d.label)?'unsupported_vehicle':w<20||h<16||w*h<600?'crop_too_small':'truncated_crop',crop,measured_motion:false}};
       const canvas=document.createElement('canvas');canvas.width=canvas.height=SIZE;const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.fillStyle='rgb(114,114,114)';ctx.fillRect(0,0,SIZE,SIZE);
       ctx.drawImage(image,x*image.width,y*image.height,w,h,0,0,SIZE,SIZE);
-      const pixels=ctx.getImageData(0,0,SIZE,SIZE).data,input=new Float32Array(SIZE*SIZE*3),plane=SIZE*SIZE;
+      const pixels=ctx.getImageData(0,0,SIZE,SIZE).data,visualKey=typeof crypto!=='undefined'&&crypto.subtle?[...new Uint8Array(await crypto.subtle.digest('SHA-256',pixels))].map(v=>v.toString(16).padStart(2,'0')).join(''):null,input=new Float32Array(SIZE*SIZE*3),plane=SIZE*SIZE;
       for(let i=0;i<plane;i++)for(let c=0;c<3;c++)input[c*plane+i]=pixels[i*4+c]/255;
       const lampCanvas=document.createElement('canvas');lampCanvas.width=Math.max(1,Math.round(Math.min(1,160/Math.max(w,h))*w));lampCanvas.height=Math.max(1,Math.round(Math.min(1,160/Math.max(w,h))*h));
       const lc=lampCanvas.getContext('2d',{willReadFrequently:true});lc.drawImage(image,x*image.width,y*image.height,w,h,0,0,lampCanvas.width,lampCanvas.height);
       const lights=lampPairs(lc.getImageData(0,0,lampCanvas.width,lampCanvas.height).data,lampCanvas.width,lampCanvas.height);
       lights.points=lights.points.map(([px,py])=>[x+px*(xx-x),y+py*(yy-y)]);
-      return {input,label:d.label,lights,crop};
+      return {input,label:d.label,lights,crop,visualKey};
     }finally{image.close();}
   }
   class CropOrientation{
-    constructor({workerFactory=()=>new Worker('orientation-worker.js?v=facing-1'),prepareCrop=prepare,onChange=()=>{},onResult=()=>{},isPaused=()=>false,isWanted=()=>true,delayMs=350,timeout=90000}={}){
-      Object.assign(this,{workerFactory,prepareCrop,onChange,onResult,isPaused,isWanted,delayMs,timeout});this.version=VERSION;this.entries=new Map();this.queue=[];this.running=false;this.worker=null;this.serial=0;this.waiter=null;this.cooldown=null;this.phase='idle';
+    constructor({workerFactory=()=>new Worker('orientation-worker.js?v=gpu-road-1'),prepareCrop=prepare,onChange=()=>{},onResult=()=>{},isPaused=()=>false,isWanted=()=>true,delayMs=350,timeout=90000}={}){
+      Object.assign(this,{workerFactory,prepareCrop,onChange,onResult,isPaused,isWanted,delayMs,timeout});this.version=VERSION;this.entries=new Map();this.visualEntries=new Map();this.queue=[];this.running=false;this.worker=null;this.serial=0;this.waiter=null;this.cooldown=null;this.phase='idle';
     }
     key(source,d){return source.cameraId+':'+source.hash+':'+fingerprint(d);}
     get(source,d){return this.entries.get(this.key(source,d));}
     request(source,d,index,priority=false){
-      const key=this.key(source,d);if(this.entries.has(key)){if(priority){const index=this.queue.findIndex(t=>t.key===key);if(index>0)this.queue.unshift(this.queue.splice(index,1)[0]);}return;}
-      this.entries.set(key,{state:'queued',version:VERSION});const task={source,d,index,key};if(priority)this.queue.unshift(task);else this.queue.push(task);this.pump();
+      const key=this.key(source,d);if(this.entries.has(key)){if(priority){const task=this.queue.find(t=>t.key===key);if(task){task.priority=Number(priority)||0;this.queue.sort((a,b)=>b.priority-a.priority);}}return;}
+      this.entries.set(key,{state:'queued',version:VERSION});const task={source,d,index,key,priority:Number(priority)||0};this.queue.push(task);this.queue.sort((a,b)=>b.priority-a.priority);this.pump();
     }
-    ensureWorker(){if(this.worker)return;this.worker=this.workerFactory();this.worker.onmessage=({data})=>{if(data.phase){this.phase=data.phase;this.onChange();return;}const waiter=this.waiter;if(!waiter||data.id!==waiter.id)return;clearTimeout(waiter.timer);this.waiter=null;if(data.error)waiter.reject(Error(data.error));else waiter.resolve(data.result);};this.worker.onerror=e=>this.fail(Error(e.message||'Facing worker failed'));}
+    ensureWorker(){if(this.worker)return;this.worker=this.workerFactory();this.worker.onmessage=({data})=>{if(data.phase){this.phase=data.phase;if(data.backend)this.backend=data.backend;this.onChange();return;}const waiter=this.waiter;if(!waiter||data.id!==waiter.id)return;clearTimeout(waiter.timer);this.waiter=null;if(data.error)waiter.reject(Error(data.error));else waiter.resolve(data.result);};this.worker.onerror=e=>this.fail(Error(e.message||'Facing worker failed'));}
     fail(error){if(this.waiter){clearTimeout(this.waiter.timer);this.waiter.reject(error);this.waiter=null;}this.worker?.terminate();this.worker=null;this.phase='error';}
     infer(prepared){this.ensureWorker();const id=++this.serial;return new Promise((resolve,reject)=>{this.waiter={id,resolve,reject,timer:setTimeout(()=>this.fail(Error('Facing model timed out')),this.timeout)};try{this.worker.postMessage({id,...prepared},[prepared.input.buffer]);}catch(e){this.fail(e);}});}
     async pump(){
       if(this.running||this.cooldown||this.isPaused()||!this.queue.length)return;
       const task=this.queue.shift();if(!this.isWanted(task.source.hash)){this.entries.delete(task.key);queueMicrotask(()=>this.pump());return;}
-      this.running=true;this.entries.set(task.key,{state:'processing',version:VERSION});this.onChange();
-      try{const prepared=await this.prepareCrop(task.source,task.d),result=prepared.skip||await this.infer(prepared);const record={...result,fingerprint:fingerprint(task.d),observedAt:Date.now()};this.entries.set(task.key,record);this.onResult(task.source,task.index,record);}
+      let skip=false;this.running=true;this.entries.set(task.key,{state:'processing',version:VERSION});this.onChange();
+      try{const prepared=await this.prepareCrop(task.source,task.d),visualKey=prepared.visualKey?task.source.cameraId+':'+prepared.visualKey:null,cached=visualKey?this.visualEntries.get(visualKey):null;skip=!!prepared.skip||!!cached;const result=prepared.skip||(cached?{...cached,lights:prepared.lights,crop:prepared.crop,inference_ms:0,backend:'cache',reused_exact_crop:true}:await this.infer(prepared));if(visualKey&&!cached&&!prepared.skip){this.visualEntries.set(visualKey,result);if(this.visualEntries.size>256)this.visualEntries.delete(this.visualEntries.keys().next().value);}if(Number.isFinite(result.inference_ms))this.lastInferenceMs=result.inference_ms;this.lastReused=!!result.reused_exact_crop;const record={...result,fingerprint:fingerprint(task.d),observedAt:Date.now()};this.entries.set(task.key,record);this.onResult(task.source,task.index,record);}
       catch(error){this.entries.set(task.key,{version:VERSION,state:'error',reason:error.message,fingerprint:fingerprint(task.d)});this.phase='error';}
-      finally{this.running=false;while(this.entries.size>512){const key=[...this.entries].find(([,v])=>!['queued','processing'].includes(v.state))?.[0];if(!key)break;this.entries.delete(key);}this.onChange();if(this.queue.length)this.cooldown=setTimeout(()=>{this.cooldown=null;this.pump();},this.delayMs);}
+      finally{this.running=false;while(this.entries.size>512){const key=[...this.entries].find(([,v])=>!['queued','processing'].includes(v.state))?.[0];if(!key)break;this.entries.delete(key);}this.onChange();if(this.queue.length)this.cooldown=setTimeout(()=>{this.cooldown=null;this.pump();},skip?0:this.backend==='webgpu'?this.delayMs*.15:this.delayMs);}
     }
     setBudget({delayMs=this.delayMs}={}){this.delayMs=Math.max(0,delayMs);if(this.cooldown){clearTimeout(this.cooldown);this.cooldown=null;}this.pump();}
     wake(){this.pump();}
