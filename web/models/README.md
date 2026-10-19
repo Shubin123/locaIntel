@@ -83,3 +83,18 @@ Earlier full-resolution-checker baseline, warm real Chrome on the available Appl
 A footprint patch below each box supplies road support. A thinned road mask supplies local axes; when at least three of the nearest 24 road-supported vehicle anchors form a consistent corridor, that corridor can refine the axis around broad roads/intersections. Mask continuity, local span, anisotropy and facing alignment gates reject unsupported directions. Results are approximate **image-space road-aligned facing estimates**. The mask does not establish lane markings, legal travel direction, geographic bearings, identity, speed, or actual movement. No movement state is changed by these estimates.
 
 Rebuild the road graph with `python -m pipeline.export_road_model` (same optional ONNX/PyTorch dependencies as the facing exporter, plus the existing transformers dependency). Metadata, source revision and checksum are in `road-v1.json`. Road masks, skeletons and facing results stay attached to their exact camera/frame in IndexedDB and the shared timeline; cached geometry retains new temporal motion evidence.
+
+## WebGL fallback (browsers without WebGPU)
+
+Workers now try **WebGPU → WebGL → WASM**. The WebGL tier uses ONNX Runtime Web 1.20.1's separate WebGL build (`../vendor/ort/ort.webgl.min.js`, MIT), loaded lazily under its own global so the WASM runtime stays available. It needs WebGL2 via `OffscreenCanvas` in workers; graph creation or run errors (including lost contexts) fall back to the CPU model, and the pane shows the backend used.
+
+ORT's WebGL backend supports fewer operators and has several kernel bugs, so `pipeline/export_webgl_models.py` builds dedicated graphs (`webgl-v1.json`, checksummed) at opset 12 with static shapes folded by onnx-simplifier, plus exact rewrites: 2× nearest `Resize` → depthwise `ConvTranspose` of ones; identity `Resize` removed; integer `Pow` → `Mul` (GLSL `pow` is NaN for negative bases); million-element `Relu` → `0.5·(x+|x|)`; SegFormer's wide 1×1 conv over a channel concat → per-branch convs summed; trailing `Slice` → one-hot conv. Exact GELU becomes the tanh approximation written as `x·σ(2z)` (WebGL `Tanh` saturates).
+
+| Model | WebGL graph vs original (ORT CPU) | Real Chrome, no WebGPU: WASM → WebGL (warm, per frame) |
+| --- | --- | --- |
+| YOLO11n (packed textures) | identical outputs; 48/48 boxes on 4 DriveBC frames | ~148 ms → ~93 ms |
+| SegFormer-B0 road (unpacked; packed leaks state between runs) | max prob. diff 0.008; 100% agreement on the 0.6 road mask, 4 frames | ~85 ms → ~35 ms |
+
+First WebGL use compiles shaders (≈0.4–0.6 s once per worker). The car-facing models stay on WASM when WebGPU is missing: the compact model was slower on WebGL (two batch-1 calls), and the ~200 MB FP32 ConvNeXt checker crashed the tab under WebGL. With detection and road on the GPU, the facing worker no longer waits for them, but a difficult crop still costs roughly 0.85 s of CPU time on the tested Mac. Timings are single-machine measurements.
+
+Rebuild: `python -m pip install 'onnxsim>=0.4,<0.5'` then `python -m pipeline.export_webgl_models`.

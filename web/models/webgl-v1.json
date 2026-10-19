@@ -1,0 +1,16 @@
+{
+  "yolo": {
+    "file": "yolo11n-webgl.onnx",
+    "bytes": 10638014,
+    "sha256": "0cae909c5e8a4923295d4c0a917dadd8b6e5cc4aa39cc3e41e11e9e05a41ce2d",
+    "opset": 12,
+    "pack": true
+  },
+  "road": {
+    "file": "segformer-b0-road-256-webgl.onnx",
+    "bytes": 16099071,
+    "sha256": "f462718ca7c5c70d1265ccf9e1ff4434ceedd6ef608ba7135505dfd6c5501c68",
+    "opset": 12,
+    "pack": false
+  }
+}

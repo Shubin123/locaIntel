@@ -1,4 +1,4 @@
-/* Shared worker runtime: request real WebGPU, retain a working WASM fallback. */
+/* Shared worker runtime: WebGPU first, then WebGL, then WASM. */
 (function(root){
   let boot;
   async function start(){
@@ -12,6 +12,20 @@
       if(adapter)root.ort.env.webgpu.adapter=adapter;
       return {gpu:!!adapter,fp16:!!adapter?.features.has('shader-f16'),adapter};
     })();return boot;
+  }
+  // The WebGL build is a separate ONNX Runtime instance; keep it under its own
+  // global so the WebGPU/WASM `ort` stays intact for CPU fallback.
+  let webglLib;
+  function webgl(){
+    if(webglLib===undefined){
+      webglLib=null;
+      try{
+        if(typeof root.OffscreenCanvas==='function'&&new root.OffscreenCanvas(1,1).getContext('webgl2')){
+          const main=root.ort;root.importScripts('vendor/ort/ort.webgl.min.js');webglLib=root.ort;root.ort=main;
+        }
+      }catch(_){webglLib=null;}
+    }
+    return webglLib;
   }
   async function bytes(spec){
     const url=new URL(spec.file,root.location.href).href;let cache;try{cache=await root.caches.open('locaintel-models-v1');}catch(_){}
@@ -43,7 +57,7 @@
     dispose(){for(const buffer of this.buffers)buffer.destroy();}
   }
   class Session{
-    constructor(cpu,gpu){this.cpu=cpu;this.gpuSpec=gpu;this.backend='wasm';this.fallback=null;this.session=null;this.variant=null;this.gpuErrors=[];}
+    constructor(cpu,gpu,webglSpec){this.cpu=cpu;this.gpuSpec=gpu;this.webglSpec=webglSpec;this.backend='wasm';this.fallback=null;this.session=null;this.variant=null;this.gpuErrors=[];}
     async initialize(){
       const runtime=await start();
       // Lack of shader-f16 is not lack of a GPU. Try the compatible full-
@@ -53,9 +67,23 @@
         for(const spec of (Array.isArray(this.gpuSpec)?this.gpuSpec:[this.gpuSpec]))if(spec&&(!spec.requiresF16||runtime.fp16))candidates.push(spec);
         if(!candidates.some(spec=>spec.file===this.cpu.file))candidates.push(this.cpu);
         for(const spec of candidates)try{await this.useGPU(spec,!!spec.captureShapes);return this;}catch(error){this.gpuErrors.push(error.message);if(spec.captureShapes)try{await this.useGPU(spec,false);return this;}catch(retry){this.gpuErrors.push(retry.message);}}
-        this.fallback='GPU initialization failed: '+this.gpuErrors.join('; ');
+        this.fallback='WebGPU initialization failed: '+this.gpuErrors.join('; ');
       }else this.fallback='WebGPU adapter unavailable in this browser';
+      if(this.webglSpec)try{await this.useWebGL();return this;}catch(error){this.fallback+='; WebGL failed: '+error.message;}
       await this.useCPU();return this;
+    }
+    async useWebGL(){
+      const lib=webgl();if(!lib)throw Error('WebGL2 unavailable in workers');
+      await this.release();const spec=this.webglSpec;
+      lib.env.webgl.pack=!!spec.pack;
+      this.session=await lib.InferenceSession.create(await bytes(spec),{executionProviders:['webgl']});
+      this.backend='webgl';this.variant=spec.file;this.capture=false;this.webglLib=lib;
+    }
+    async runWebGL(feeds){
+      const lib=this.webglLib,inputs={},outputs={};
+      for(const [name,t] of Object.entries(feeds))inputs[name]=new lib.Tensor(t.type,t.data,t.dims);
+      for(const [name,t] of Object.entries(await this.session.run(inputs))){outputs[name]=new root.ort.Tensor('float32',Float32Array.from(t.data),t.dims);t.dispose?.();}
+      return outputs;
     }
     async release(){try{await this.session?.release();}catch(_){}this.captureIO?.dispose();this.captureIO=null;this.session=null;}
     async useGPU(spec,capture){await this.release();const [graph,externalData]=await Promise.all([bytes(spec),Promise.all((spec.externalData||[]).map(async part=>({path:part.path,data:await bytes(part)})))]);this.session=await root.ort.InferenceSession.create(graph,{executionProviders:['webgpu'],graphOptimizationLevel:'all',enableGraphCapture:capture,...(externalData.length?{externalData}:{})});this.backend='webgpu';this.variant=spec.file;this.activeSpec=spec;this.capture=capture;this.lost=null;const session=this.session;this.loss=root.ort.env.webgpu.device?.lost?.then(info=>{const error=Error('GPU device lost: '+(info.message||info.reason||'unavailable'));if(this.session===session)this.lost=error;return error;});}
@@ -67,6 +95,10 @@
       return this.backend==='webgpu'&&this.loss?Promise.race([work,this.loss.then(error=>{throw error;})]):work;
     }
     async run(feeds,{cpuFeeds}={}){
+      if(this.backend==='webgl')try{return await this.runWebGL(feeds);}catch(error){
+        // Lost contexts or unsupported shaders: keep working on the CPU.
+        this.fallback='WebGL failed: '+error.message;await this.useCPU();return this.session.run(feeds);
+      }
       try{return await this.runGPU(feeds);}catch(error){
         if(this.backend!=='webgpu')throw error;
         // An adapter may support the model but not command capture. Retry
@@ -77,5 +109,5 @@
     }
     get inputNames(){return this.session.inputNames;}get outputNames(){return this.session.outputNames;}
   }
-  root.ModelRuntime={start,bytes,Session};
+  root.ModelRuntime={start,bytes,webgl,Session};
 })(globalThis);

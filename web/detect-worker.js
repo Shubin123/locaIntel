@@ -1,7 +1,8 @@
-importScripts('inference-runtime.js?v=facing-v2','detector.js?v=gpu-road-1');
+importScripts('inference-runtime.js?v=webgl-1','detector.js?v=webgl-1');
 let sessionPromise;
+async function webglSpec(name){try{const r=await fetch('models/webgl-v1.json?v=webgl-1');if(!r.ok)return null;const spec=(await r.json())[name];return spec&&{...spec,file:'models/'+spec.file};}catch(_){return null;}}
 async function session(){
-  if(!sessionPromise){self.postMessage({phase:'loading'});sessionPromise=new ModelRuntime.Session({file:'models/yolo11n.onnx'}).initialize().catch(error=>{sessionPromise=null;throw error;});}return sessionPromise;
+  if(!sessionPromise){self.postMessage({phase:'loading'});sessionPromise=webglSpec('yolo').then(webgl=>new ModelRuntime.Session({file:'models/yolo11n.onnx'},null,webgl).initialize()).catch(error=>{sessionPromise=null;throw error;});}return sessionPromise;
 }
 self.onmessage=async({data})=>{
   try{

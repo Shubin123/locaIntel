@@ -23,3 +23,21 @@ test('GPU device loss maps batched inputs to the compatible CPU shape',async()=>
 test('device loss interrupts a stuck GPU operation and recovers on CPU',async()=>{const {m,loseGPU}=runtime({gpu:true,hangGPU:true}),s=await new m.Session(cpu).initialize();const pending=s.run({image:{dims:[2]}},{cpuFeeds:()=>({image:{dims:[1]}})});loseGPU({message:'Device was destroyed.'});let timer;try{const result=await Promise.race([pending,new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('GPU loss hung')),100))]);assert.equal(result.out,'wasm');assert.equal(result.size,1);assert.match(s.fallback,/Device was destroyed/);}finally{clearTimeout(timer);}});
 
 test('non-FP16 adapters choose the FP32 GPU graph and supply cached external weights',async()=>{const {m,created}=runtime({gpu:true,half:false}),spec={file:'fp32.onnx',externalData:[{file:'weights.bin',path:'weights.bin'}]},s=await new m.Session(cpu,[half,spec]).initialize();assert.equal(s.backend,'webgpu');assert.equal(s.variant,'fp32.onnx');assert.equal(created[0].externalData[0].path,'weights.bin');assert.deepEqual([...created[0].externalData[0].data],[1]);});
+
+function webglRuntime({gpu=false,webgl2=true,createFails=false,runFails=false}={}){
+ const created=[],runs=[];let ctx;
+ class Tensor{constructor(type,data,dims){Object.assign(this,{type,data,dims});}}
+ const session=(backend,fail)=>({inputNames:['image'],outputNames:['logits'],release:async()=>{},run:async feeds=>{runs.push({backend,dims:feeds.image.dims,data:Array.from(feeds.image.data)});if(fail)throw Error('WebGL context lost');const x=feeds.image.data;return {logits:new Tensor('float32',Float32Array.from([x[0]*10,x[0]*10+1]),[feeds.image.dims[0]===1?1:feeds.image.dims[0],2])};}});
+ const webglLib={env:{webgl:{}},Tensor,InferenceSession:{create:async(bytes,options)=>{created.push(options.executionProviders[0]);if(createFails)throw Error('cannot resolve operator');return session('webgl',runFails);}}};
+ const main={env:{wasm:{},webgpu:{}},Tensor,InferenceSession:{create:async(bytes,options)=>{created.push(options.executionProviders[0]);return session(options.executionProviders[0],false);}}};
+ ctx=vm.createContext({URL,Response,Uint8Array,Float32Array,ort:main,location:{href:'https://example.test/app/worker.js'},
+  importScripts:p=>{if(p.includes('ort.webgl'))ctx.ort=webglLib;},
+  OffscreenCanvas:class{getContext(kind){return kind==='webgl2'&&webgl2?{}:null;}},
+  navigator:gpu?{gpu:{requestAdapter:async()=>({features:new Set()})}}:{},fetch:async()=>new Response(new Uint8Array([1]))});
+ vm.runInContext(fs.readFileSync('web/inference-runtime.js','utf8'),ctx);return {m:ctx.ModelRuntime,ctx,main,webglLib,created,runs};
+}
+const glSpec={file:'model-webgl.onnx',pack:true};
+test('without WebGPU, WebGL runs before CPU and leaves the CPU runtime global intact',async()=>{const {m,ctx,main,webglLib,created}=webglRuntime(),s=await new m.Session(cpu,null,glSpec).initialize();assert.equal(s.backend,'webgl');assert.deepEqual(created,['webgl']);assert.equal(ctx.ort,main);assert.equal(webglLib.env.webgl.pack,true);assert.match(s.fallback,/WebGPU adapter unavailable/);const out=await s.run({image:new main.Tensor('float32',Float32Array.from([2]),[1,1])});assert(out.logits instanceof main.Tensor);assert.deepEqual([...out.logits.data],[20,21]);});
+test('WebGL graph or context failures fall back to the CPU model',async()=>{for(const options of [{createFails:true},{runFails:true}]){const {m,main,created}=webglRuntime(options),s=await new m.Session(cpu,null,glSpec).initialize(),out=await s.run({image:new main.Tensor('float32',Float32Array.from([1]),[1,1])});assert.equal(s.backend,'wasm');assert.match(s.fallback,/WebGL/);assert.deepEqual(created,['webgl','wasm']);assert.deepEqual([...out.logits.data],[10,11]);}});
+test('browsers without WebGL2 in workers go straight to CPU',async()=>{const {m,created}=webglRuntime({webgl2:false}),s=await new m.Session(cpu,null,glSpec).initialize();assert.equal(s.backend,'wasm');assert.match(s.fallback,/WebGL2 unavailable/);assert.deepEqual(created,['wasm']);});
+test('WebGPU stays preferred over WebGL when available',async()=>{const {m,created}=webglRuntime({gpu:true}),s=await new m.Session(cpu,null,glSpec).initialize();assert.equal(s.backend,'webgpu');assert.deepEqual(created,['webgpu']);});

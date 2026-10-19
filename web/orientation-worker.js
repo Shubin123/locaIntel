@@ -1,4 +1,4 @@
-importScripts('inference-runtime.js?v=facing-v2','orientation.js?v=facing-v2');
+importScripts('inference-runtime.js?v=webgl-1','orientation.js?v=webgl-1');
 let ready,teacherReady;
 async function load(){
   if(!ready)ready=(async()=>{

@@ -78,7 +78,7 @@
     }finally{image.close();}
   }
   class CropOrientation{
-    constructor({workerFactory=()=>new Worker('orientation-worker.js?v=facing-v2'),prepareCrop=prepare,onChange=()=>{},onResult=()=>{},isPaused=()=>false,isWanted=()=>true,delayMs=350,timeout=90000}={}){
+    constructor({workerFactory=()=>new Worker('orientation-worker.js?v=webgl-1'),prepareCrop=prepare,onChange=()=>{},onResult=()=>{},isPaused=()=>false,isWanted=()=>true,delayMs=350,timeout=90000}={}){
       Object.assign(this,{workerFactory,prepareCrop,onChange,onResult,isPaused,isWanted,delayMs,timeout});this.version=VERSION;this.entries=new Map();this.visualEntries=new Map();this.queue=[];this.running=false;this.worker=null;this.serial=0;this.waiter=null;this.cooldown=null;this.phase='idle';
     }
     key(source,d){return source.cameraId+':'+source.hash+':'+fingerprint(d);}
@@ -96,7 +96,7 @@
       let skip=false;this.running=true;this.entries.set(task.key,{state:'processing',version:VERSION});this.onChange();
       try{const prepared=await this.prepareCrop(task.source,task.d),visualKey=prepared.visualKey?task.source.cameraId+':'+prepared.visualKey:null,cached=visualKey?this.visualEntries.get(visualKey):null;skip=!!prepared.skip||!!cached;const result=prepared.skip||(cached?{...cached,lights:prepared.lights,crop:prepared.crop,inference_ms:0,backend:'cache',reused_exact_crop:true}:await this.infer(prepared));if(visualKey&&!cached&&!prepared.skip){this.visualEntries.set(visualKey,result);if(this.visualEntries.size>256)this.visualEntries.delete(this.visualEntries.keys().next().value);}if(Number.isFinite(result.inference_ms))this.lastInferenceMs=result.inference_ms;this.lastReused=!!result.reused_exact_crop;const record={...result,fingerprint:fingerprint(task.d),observedAt:Date.now()};this.entries.set(task.key,record);this.onResult(task.source,task.index,record);}
       catch(error){this.entries.set(task.key,{version:VERSION,state:'error',reason:error.message,fingerprint:fingerprint(task.d)});this.phase='error';}
-      finally{this.running=false;while(this.entries.size>512){const key=[...this.entries].find(([,v])=>!['queued','processing'].includes(v.state))?.[0];if(!key)break;this.entries.delete(key);}this.onChange();if(this.queue.length)this.cooldown=setTimeout(()=>{this.cooldown=null;this.pump();},skip?0:this.backend==='webgpu'?this.delayMs*.03:this.delayMs);}
+      finally{this.running=false;while(this.entries.size>512){const key=[...this.entries].find(([,v])=>!['queued','processing'].includes(v.state))?.[0];if(!key)break;this.entries.delete(key);}this.onChange();if(this.queue.length)this.cooldown=setTimeout(()=>{this.cooldown=null;this.pump();},skip?0:(this.backend==='webgpu'||this.backend==='webgl')?this.delayMs*.03:this.delayMs);}
     }
     setBudget({delayMs=this.delayMs}={}){this.delayMs=Math.max(0,delayMs);if(this.cooldown){clearTimeout(this.cooldown);this.cooldown=null;}this.pump();}
     wake(){this.pump();}
