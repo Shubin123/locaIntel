@@ -87,18 +87,50 @@ The camera explorer starts with heat and road shading off to keep motion legible
 
 ### Refresh camera images from DriveBC
 
-**Refresh from DriveBC** now makes direct, cache-bypassing browser requests to the upstream image URLs for every visible camera and the selected camera. It also checks the published analysis. Image requests are limited to six at a time, time out after 12 seconds, and are shared between the camera card and explorer. Newly displayed cameras load from the source when filtering or loading more feeds. The latest-source view refreshes every minute while open; the analyzed-frame view remains selected during automatic analysis checks.
+**Refresh from DriveBC** now makes direct, cache-bypassing browser requests to the upstream image URLs for every visible camera and the selected camera. It also checks the published analysis. Image requests use the selected device budget (one to six at a time), time out after 12 seconds, and are shared between the camera card and explorer. Newly displayed cameras load from the source when filtering or loading more feeds. Automatic source refresh follows the device power budget; the analyzed-frame view remains selected during automatic checks.
 
 Each camera shows its source-check time separately from its analyzed-frame age. A source refresh cannot make DriveBC capture a newer frame; an unchanged upstream image can legitimately remain unchanged. Failed requests retain the last successful source image, or fall back to the cached analyzed image, with a visible failure status. Refreshing source images still works when the published analysis request fails, provided the page already has its camera list.
 
-Source image bytes are hashed with SHA-256. Published boxes, vectors, road shading and sampled heat are shown only on matching images. Fresh images without matching published analysis run through the browser detector described below, so new boxes and per-camera counts appear as local inference completes. Geographic maps, history and network totals still refer to published analysis. **View analyzed frame** switches back to the matching cached frame; **Motion-only view** also selects that frame. On GitHub Pages, fresh images do not trigger Python inference: YOLO/SegFormer analysis remains on its separate scheduled workflow. No GitHub token is exposed to visitors.
+Source image bytes are hashed with SHA-256. Published boxes, vectors, road shading and sampled heat are shown only on matching images. Fresh images without matching published analysis run through the browser detector described below, so new boxes and per-camera counts appear as local inference completes. Maps and totals follow the latest fully analyzed frames in Live, or saved frames at the history cursor. **View analyzed frame** switches back to the matching cached frame; **Motion-only view** also selects that frame. On GitHub Pages, fresh images do not trigger Python inference: YOLO/SegFormer analysis remains on its separate scheduled workflow. No GitHub token is exposed to visitors.
 
 `node --test tests/*.test.cjs` checks direct source requests, cache bypass, bounded downloads, unchanged-image reuse, timeouts and last-good-image retention, as well as vector geometry.
 
 ### Bounding boxes on refreshed images
 
-Fresh DriveBC images now run through YOLO11 nano **in the browser**, using a vendored ONNX Runtime Web worker. The first unmatched source image downloads the model (~10 MB) and WASM runtime (~11 MB); the UI shows loading and per-camera detection progress. The selected camera is prioritized, inference runs one image at a time off the UI thread, and results are cached by source-image SHA-256. Repeated images reuse the same boxes; a new image receives new detections. Refresh retries failed detection. Browser detections stay local and do not modify the published history or aggregate map.
+Fresh DriveBC images now run through YOLO11 nano **in the browser**, using a vendored ONNX Runtime Web worker. The first unmatched source image downloads the model (~10 MB) and WASM runtime (~11 MB); the UI shows loading and per-camera detection progress. The selected camera is prioritized, inference runs one image at a time off the UI thread, and results are cached by source-image SHA-256. Repeated images reuse the same boxes; a new image receives new detections. Refresh retries failed detection. Browser detections stay local and contribute to this browser’s monitoring map/history; they do not modify the published server dataset.
 
 Fresh-source boxes and per-camera counts appear as inference completes. Confidence is 0.30 and class-specific NMS IoU is 0.45. Normalized boxes undo square-input letterboxing so coordinates align with the original image. Single-frame browser detections have unknown movement and road membership; cached road masks, vectors and historical heat are not projected onto different images. If browser inference fails or the device lacks WebAssembly support, the page discloses the error and **View analyzed frame** restores the last server-analyzed image and boxes.
 
 The checked-in model can be rebuilt with `python -m pipeline.export_browser_model` after installing the optional ONNX export dependency noted in that module. Model/runtime licensing and origin are documented in `web/models/README.md` and `web/vendor/ort/LICENSE`. Test coverage includes letterbox coordinate mapping, class/confidence filtering, nonmaximum suppression, serial inference, image-hash deduplication, and retry handling.
+
+## Unified browser monitoring
+
+The website now includes one time cursor for the camera explorer, feed cards, detection totals, geographic map, and sampled-traffic chart. **Live** uses the latest available, fully analyzed frame per camera. While a new photo is being processed, the previous photo and its matching boxes remain visible. Keyed updates preserve camera image elements, selection, focus and map popups. New image/overlay pairs are decoded and swapped together, with reduced-motion preferences respected.
+
+The timeline uses local IndexedDB history. Scrub, pick a date/time, or use previous/next and playback to select saved observations; playback steps through the selected camera's frames while every pane follows the same time. Historical views choose the last saved frame **at or before** the cursor, and their charts exclude future observations. A camera with no saved frame at that time does not borrow its current photo. History review pauses new live collection and queued inference; already-running requests can finish and be archived without moving the cursor. **Return to Live** and manual **Refresh** resume current source requests. The selected saved photo can be downloaded.
+
+### Local photo retention and storage
+
+The default is **500 MB of photo data, up to seven days**, as requested. Storage and retention selectors change these limits; oldest observations are removed when either limit is reached. There is no guarantee that 500 MB can hold seven complete days for every camera. Only viewed/selected feeds are collected while the app is open; this is not a background recording service when the browser is closed.
+
+Images are deduplicated by SHA-256, stored once as IndexedDB blobs, and linked to camera observations and their exact-frame detections. Existing analyzed snapshots are also saved when available. Photo history, matching boxes and settings survive ordinary page reloads and site updates. Saved browser detections are reused when their model version still matches, reducing repeated work. A bounded set of decoded/live image URLs stays in memory; old photos are read from disk when reviewing them.
+
+The storage pane reports exact saved photo bytes and the selected budget, photo/frame counts, and the browser's estimated origin usage/quota. The photo budget excludes metadata and HTTP-cached model/runtime files. Browser policy, private mode, user clearing and storage pressure can affect local data; errors are shown without stopping live monitoring. **Clear saved history** deletes this app's saved photos and metadata after confirmation, while leaving preferences and ongoing live monitoring intact. Photos and browser-generated detections are not uploaded to GitHub or another service.
+
+Timeline observation times describe source fetches or known server observations, not guaranteed camera capture times. Repeated identical images update their last-seen metadata without inventing additional distinct photo samples.
+
+### Device power slider
+
+The slider controls browser work, not an operating-system CPU percentage, GPU setting, or power consumption in watts. Detection input size and model accuracy settings stay fixed. These are the current budgets:
+
+| Level | Automatic refresh | Concurrent downloads | Idle gap between detections |
+| --- | --- | --- | --- |
+| Eco | 5 minutes | 1 | 1.5 seconds |
+| Low | 3 minutes | 2 | 0.9 seconds |
+| Balanced (default) | 90 seconds | 3 | 0.35 seconds |
+| Fast | 60 seconds | 4 | 0.1 seconds |
+| Maximum | 30 seconds | 6 | none |
+
+The setting persists on this device. Hidden tabs and historical review pause new scheduled work; active operations finish safely. Manual refresh remains available, subject to the chosen download and inference budgets. The separate GitHub Actions/Python collection service is unaffected by a visitor's browser slider.
+
+Run browser-side unit tests with `npm ci && npm test`; Python tests remain `python -m unittest discover -s tests`. The browser history and transaction tests use `fake-indexeddb`. Real Chrome QA also checks indexed storage across reloads, matching photo/box swaps, stable camera DOM elements, timeline pinning, power settings, and phone layout.

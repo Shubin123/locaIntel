@@ -1,5 +1,6 @@
 /* Fresh-frame YOLO11 detections, independent of the scheduled motion/road pipeline. */
 (function (root) {
+  const MODEL_VERSION='yolo11n-640-opset17-iou45-v1';
   const labels = { 0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck' };
   function letterbox(width, height, size = 640) {
     const scale = Math.min(size / width, size / height);
@@ -52,9 +53,9 @@
     } finally { image.close?.(); }
   }
   class BrowserDetector {
-    constructor({ workerFactory = () => new Worker('detect-worker.js?v=fresh-boxes-1'), prepare = preprocess, onChange = () => {}, isWanted = () => true, timeout = 120000 } = {}) {
-      Object.assign(this, { workerFactory, prepare, onChange, isWanted, timeout });
-      this.entries = new Map(); this.pending = new Map(); this.queue = []; this.worker = null; this.waiting = new Map(); this.serial = 0; this.running = false; this.state = 'idle';
+    constructor({ workerFactory = () => new Worker('detect-worker.js?v=monitor-1'), prepare = preprocess, onChange = () => {}, onResult = () => {}, isWanted = () => true, isPaused = () => false, delayMs = 0, timeout = 120000 } = {}) {
+      Object.assign(this, { workerFactory, prepare, onChange, onResult, isWanted, isPaused, delayMs, timeout });
+      this.entries = new Map(); this.pending = new Map(); this.queue = []; this.worker = null; this.waiting = new Map(); this.serial = 0; this.running = false; this.state = 'idle';this.modelVersion=MODEL_VERSION; this.cooldown = null;
     }
     get(hash) { return this.entries.get(hash); }
     request(source, priority = false) {
@@ -94,24 +95,28 @@
       });
     }
     async pump() {
-      if (this.running || !this.queue.length) return;
-      this.running = true; const task = this.queue.shift(), { source } = task;
+      if (this.running || this.cooldown || !this.queue.length || this.isPaused()) return;
+      this.running = true; const task = this.queue.shift(), { source } = task;let didWork=false;
       try {
         if (!this.isWanted(source.hash)) { this.entries.delete(source.hash); task.resolve({ status: 'skipped' }); return; }
-        this.entries.set(source.hash, { status: 'processing' }); this.onChange();
+        didWork=true;this.entries.set(source.hash, { status: 'processing' }); this.onChange();
         const { detections } = await this.infer(await this.prepare(source));
         const counts = {}; for (const d of detections) counts[d.label] = (counts[d.label] || 0) + 1;
-        const result = { status: 'ready', hash: source.hash, detections, counts, observed: new Date().toISOString(), model: 'YOLO11n / ONNX browser' };
-        this.entries.set(source.hash, result); task.resolve(result);
+        const result = { status: 'ready', hash: source.hash, version:MODEL_VERSION, detections, counts, observed: new Date().toISOString(), model: 'YOLO11n / ONNX browser' };
+        this.entries.set(source.hash, result); this.onResult(source,result); task.resolve(result);
       } catch (error) {
         const result = { status: 'error', error: error.message, hash: source.hash }; this.entries.set(source.hash, result); task.resolve(result);
       } finally {
         this.pending.delete(source.hash); this.running = false;
         // Keep a bounded cache of completed frame analyses.
         if (this.entries.size > 128) for (const [hash, entry] of this.entries) { if (!this.pending.has(hash) && hash !== source.hash) { this.entries.delete(hash); break; } }
-        this.onChange(); this.pump();
+        this.onChange();
+        if(didWork&&this.delayMs>0&&this.queue.length)this.cooldown=setTimeout(()=>{this.cooldown=null;this.pump();},this.delayMs);
+        else Promise.resolve().then(()=>this.pump());
       }
     }
+    setBudget({delayMs=this.delayMs}={}) {this.delayMs=Math.max(0,delayMs);if(this.cooldown){clearTimeout(this.cooldown);this.cooldown=null;}if(!this.running&&this.queue.length&&this.delayMs>0)this.cooldown=setTimeout(()=>{this.cooldown=null;this.pump();},this.delayMs);else this.pump();}
+    wake() {this.pump();}
     retryFailed() { for (const [hash, entry] of this.entries) if (entry.status === 'error') this.entries.delete(hash); if (this.state === 'error' && !this.running) { this.worker?.terminate(); this.worker = null; this.state = 'idle'; } }
   }
   root.YoloBoxes = { letterbox, iou, decode, preprocess };

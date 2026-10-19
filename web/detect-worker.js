@@ -1,4 +1,4 @@
-importScripts('vendor/ort/ort.wasm.min.js', 'detector.js?v=fresh-boxes-1');
+importScripts('vendor/ort/ort.wasm.min.js', 'detector.js?v=monitor-1');
 ort.env.wasm.wasmPaths = new URL('vendor/ort/', self.location.href).href;
 ort.env.wasm.numThreads = 1; // Works on GitHub Pages without cross-origin isolation.
 ort.env.wasm.proxy = false;

@@ -5,3 +5,5 @@ __pycache__/
 .DS_Store
 web/data/*.json
 web/frames/*.jpg
+
+node_modules/

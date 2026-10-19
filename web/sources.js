@@ -2,14 +2,17 @@
 globalThis.CameraSourceCache = class CameraSourceCache {
   constructor({ fetcher = (...args) => fetch(...args), digest = bytes => crypto.subtle.digest('SHA-256', bytes),
     makeURL = blob => URL.createObjectURL(blob), revokeURL = url => URL.revokeObjectURL(url),
-    validate = async blob => { if (typeof createImageBitmap === 'function') { const bitmap = await createImageBitmap(blob); bitmap.close(); } },
-    concurrency = 6, timeout = 12000 } = {}) {
-    Object.assign(this, { fetcher, digest, makeURL, revokeURL, validate, concurrency, timeout });
-    this.entries = new Map(); this.inflight = new Map(); this.active = 0; this.waiters = [];
+    validate = async blob => { if (typeof createImageBitmap === 'function') { const bitmap = await createImageBitmap(blob); const size={width:bitmap.width,height:bitmap.height};bitmap.close();return size; } },
+    concurrency = 6, timeout = 12000, onUpdate = () => {} } = {}) {
+    Object.assign(this, { fetcher, digest, makeURL, revokeURL, validate, concurrency, timeout, onUpdate });
+    this.entries = new Map(); this.inflight = new Map(); this.active = 0; this.waiters = []; this.retired = new Set();
   }
   get(id) { return this.entries.get(String(id)); }
   async slot() { if (this.active < this.concurrency) { this.active++; return; } await new Promise(resolve => this.waiters.push(resolve)); }
-  release() { const next = this.waiters.shift(); if (next) next(); else this.active--; }
+  wake() {while(this.active<this.concurrency&&this.waiters.length){this.active++;this.waiters.shift()();}}
+  release() { this.active=Math.max(0,this.active-1);this.wake(); }
+  setConcurrency(value) {this.concurrency=Math.max(1,Math.min(6,value));this.wake();}
+  releaseUnused(keep) {for(const url of this.retired)if(!keep.has(url)){this.revokeURL(url);this.retired.delete(url);}}
   async load(camera, force = false) {
     const id = String(camera.id);
     if (this.inflight.has(id)) return this.inflight.get(id);
@@ -29,13 +32,14 @@ globalThis.CameraSourceCache = class CameraSourceCache {
       if (!response.ok) throw Error('DriveBC HTTP ' + response.status);
       const blob = await response.blob();
       if (!blob.size || !blob.type.startsWith('image/')) throw Error('DriveBC did not return an image');
-      await this.validate(blob);
+      const dimensions=await this.validate(blob);
       const hash = Array.from(new Uint8Array(await this.digest(await blob.arrayBuffer())), b => b.toString(16).padStart(2, '0')).join('');
       const url = previous?.hash === hash && previous.url ? previous.url : this.makeURL(blob);
-      const entry = { hash, url, blob, checked: new Date().toISOString(), modified: response.headers.get('last-modified'), error: null };
+      const entry = { hash, url, blob, cameraId:id, width:dimensions?.width,height:dimensions?.height, checked: new Date().toISOString(), modified: response.headers.get('last-modified'), error: null };
       this.entries.set(id, entry);
       // Let existing rendered <img> elements finish swapping to their new URLs.
-      if (previous?.url && previous.url !== url) setTimeout(() => this.revokeURL(previous.url), 1000);
+      if (previous?.url && previous.url !== url) this.retired.add(previous.url);
+      try { this.onUpdate(camera,entry); } catch (_) { /* Storage errors do not invalidate a successful image fetch. */ }
       return entry;
     } catch (error) {
       const entry = { ...previous, error: error.name === 'AbortError' ? 'DriveBC request timed out' : error.message, attempted: new Date().toISOString() };
@@ -46,5 +50,5 @@ globalThis.CameraSourceCache = class CameraSourceCache {
     const unique = [...new Map(cameras.map(c => [String(c.id), c])).values()];
     return Promise.all(unique.map(camera => this.load(camera, force)));
   }
-  clear() { for (const entry of this.entries.values()) if (entry.url) this.revokeURL(entry.url); this.entries.clear(); }
+  clear() { for (const entry of this.entries.values()) if (entry.url) this.revokeURL(entry.url); this.entries.clear();for(const url of this.retired)this.revokeURL(url);this.retired.clear(); }
 }

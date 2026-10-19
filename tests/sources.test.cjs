@@ -44,3 +44,9 @@ test('a source timeout is surfaced and releases its concurrency slot', async () 
   const cache=new Cache({...options((url,opts)=>new Promise((resolve,reject)=>opts.signal.addEventListener('abort',()=>reject(Object.assign(Error('timeout'),{name:'AbortError'}))))),timeout:10});
   const entry=await cache.load(camera,true);assert.match(entry.error,/timed out/);assert.equal(cache.active,0);
 });
+test('lowering the download budget applies to waiting requests without interrupting active transfers',async()=>{
+ let calls=0,active=0;const later=[];
+ const cache=new Cache({...options(async()=>{calls++;active++;if(calls>3)later.push(active);await new Promise(r=>setTimeout(r,8));active--;return image();}),concurrency:3});
+ const job=cache.refresh(Array.from({length:10},(_,i)=>({...camera,id:String(i)})),true);await new Promise(r=>setTimeout(r,1));cache.setConcurrency(1);await job;
+ assert(later.every(n=>n===1));assert.equal(cache.active,0);
+});

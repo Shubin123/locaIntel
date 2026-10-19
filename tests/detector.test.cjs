@@ -29,3 +29,11 @@ test('failed detection is visible and can be retried instead of reusing old boxe
  const detector=new ctx.BrowserDetector({workerFactory:()=>new Worker(),prepare:async()=>({input:new Float32Array(1),geometry:{}})});
  assert.equal((await detector.request({hash:'new'})).status,'error');fail=false;detector.retryFailed();assert.equal((await detector.request({hash:'new'})).status,'ready');assert.equal(detector.get('new').detections.length,0);
 });
+test('power budget inserts idle time and paused work resumes without losing queued frames',async()=>{
+ let paused=true;const starts=[];
+ class Worker{postMessage(m){starts.push(Date.now());queueMicrotask(()=>this.onmessage({data:{id:m.id,detections:[]}}));}terminate(){}}
+ const detector=new ctx.BrowserDetector({workerFactory:()=>new Worker(),prepare:async()=>({input:new Float32Array(1),geometry:{}}),isPaused:()=>paused,delayMs:30});
+ const a=detector.request({hash:'a'}),b=detector.request({hash:'b'});await new Promise(r=>setTimeout(r,10));assert.equal(starts.length,0);
+ paused=false;detector.wake();await Promise.all([a,b]);assert.equal(starts.length,2);assert(starts[1]-starts[0]>=25);
+ detector.setBudget({delayMs:0});assert.equal(detector.delayMs,0);
+});
