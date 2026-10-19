@@ -111,11 +111,11 @@
         // Keep a bounded cache of completed frame analyses.
         if (this.entries.size > 128) for (const [hash, entry] of this.entries) { if (!this.pending.has(hash) && hash !== source.hash) { this.entries.delete(hash); break; } }
         this.onChange();
-        if(didWork&&this.delayMs>0&&this.queue.length)this.cooldown=setTimeout(()=>{this.cooldown=null;this.pump();},this.delayMs);
+        if(didWork&&this.delayMs>0&&this.queue.length)this.cooldown=setTimeout(()=>{this.cooldown=null;this.pump();},this.backend==='webgpu'?this.delayMs*.15:this.delayMs);
         else Promise.resolve().then(()=>this.pump());
       }
     }
-    setBudget({delayMs=this.delayMs}={}) {this.delayMs=Math.max(0,delayMs);if(this.cooldown){clearTimeout(this.cooldown);this.cooldown=null;}if(!this.running&&this.queue.length&&this.delayMs>0)this.cooldown=setTimeout(()=>{this.cooldown=null;this.pump();},this.delayMs);else this.pump();}
+    setBudget({delayMs=this.delayMs}={}) {this.delayMs=Math.max(0,delayMs);if(this.cooldown){clearTimeout(this.cooldown);this.cooldown=null;}if(!this.running&&this.queue.length&&this.delayMs>0)this.cooldown=setTimeout(()=>{this.cooldown=null;this.pump();},this.backend==='webgpu'?this.delayMs*.15:this.delayMs);else this.pump();}
     wake() {this.pump();}
     retryFailed() { for (const [hash, entry] of this.entries) if (entry.status === 'error') this.entries.delete(hash); if (this.state === 'error' && !this.running) { this.worker?.terminate(); this.worker = null; this.state = 'idle'; } }
   }
