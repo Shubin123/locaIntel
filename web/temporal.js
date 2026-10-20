@@ -39,9 +39,9 @@
     const pixels=ctx.getImageData(0,0,96,64).data;
     const sample=(x,y)=>{const i=(Math.min(63,Math.max(0,Math.floor(y)))*96+Math.min(95,Math.max(0,Math.floor(x))))*4;return [pixels[i]/255,pixels[i+1]/255,pixels[i+2]/255];};
     const crop=document.createElement('canvas');crop.width=12;crop.height=12;const cc=crop.getContext('2d',{willReadFrequently:true});
-    const ds=detections.map(d=>{const [x,y,xx,yy]=d.box;cc.clearRect(0,0,12,12);cc.drawImage(bitmap,x*bitmap.width,y*bitmap.height,(xx-x)*bitmap.width,(yy-y)*bitmap.height,0,0,12,12);const rgba=cc.getImageData(0,0,12,12).data,appearance=[];for(let i=0;i<rgba.length;i++)if(i%4!==3)appearance.push(rgba[i]/255);return {...d,appearance};});bitmap.close();
+    const ds=detections.map(d=>{const [x,y,xx,yy]=d.box;cc.clearRect(0,0,12,12);cc.drawImage(bitmap,x*bitmap.width,y*bitmap.height,(xx-x)*bitmap.width,(yy-y)*bitmap.height,0,0,12,12);const rgba=cc.getImageData(0,0,12,12).data,appearance=[];for(let i=0;i<rgba.length;i++)if(i%4!==3)appearance.push(rgba[i]/255);return {...d,appearance};});const width=bitmap.width,height=bitmap.height;bitmap.close();
     const background=[];for(let y=8;y<64;y+=4)for(let x=2;x<96;x+=4){if(detections.some(d=>x/96>d.box[0]-.02&&x/96<d.box[2]+.02&&y/64>d.box[1]-.02&&y/64<d.box[3]+.02))background.push(null);else background.push(sample(x,y).reduce((a,b)=>a+b)/3);}
-    let signature=2166136261;for(const value of pixels)signature=Math.imul(signature^value,16777619);return {detections:ds,background,pixelSignature:String(signature>>>0)};
+    let signature=2166136261;for(const value of pixels)signature=Math.imul(signature^value,16777619);return {detections:ds,background,width,height,pixelSignature:String(signature>>>0)};
   }
   root.TemporalTraffic={analyze,features,matches};
 })(globalThis);

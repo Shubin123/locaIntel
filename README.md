@@ -163,3 +163,169 @@ A compact SegFormer model predicts road surface on fresh source images, so the r
 ### WebGL fallback
 
 When a browser has no working WebGPU, vehicle detection and road segmentation now run on WebGL before falling back to CPU (on the test Mac: ~1.6× and ~2.4× faster than WASM, with matching outputs). Status lines show **GPU / WebGL**. Car facing still uses the CPU in that case. Details, validation and rebuild steps: [WebGL fallback](web/models/README.md#webgl-fallback-browsers-without-webgpu).
+
+## Multi-car GPU inference batches
+
+The **GPU inference batching** slider under Device power budget selects **Off,
+2, 4, or 8 cars** per inference call. Four cars is the default. This controls real
+WebGPU batches in the vehicle-facing cascade: every car retains its original and
+mirrored 224×224 views, and both the compact screening stage and full-resolution
+checker process multiple cars together. YOLO and road-scene inference keep their
+existing frame-at-a-time execution. The power slider remains independent.
+
+Higher settings improve sustained throughput at the cost of more GPU memory.
+Partial batches run immediately, with unused slots padded, using the selected
+static shape so short queues do not trigger graph recompilation. A batch of
+eight needs at least 9.2 MiB of GPU input buffers; intermediate activations,
+weights and runtime buffers require substantially more. Changing the setting
+releases the previous batch sessions. An unsupported batch or memory/device
+failure returns to individual inference, with a reason in status; fixed batch
+tensors are never passed to an incompatible CPU graph. CPU-only browsers use
+individual inference. Selected crops keep priority and all results retain their
+exact frame, crop fingerprint and detection index.
+
+Static graphs use ORT graph optimizations, preallocated GPU input/output buffers,
+and command capture/replay when supported. The compact individual path now also
+uses capture. Batches share the existing checksummed weights rather than
+redownloading a model for each setting: all nine new shape graphs total about
+1.7 MiB, and one setting normally caches about 0.3 MiB for the selected precision
+and compact model. Model-cache storage is separate from the photo-history limit.
+The FP16 and compact graphs reference tensor byte ranges in the original ONNX
+files; the FP32 graphs reuse the original external weight shards.
+
+Local **GTX 1080 Ti**, real Chromium/Vulkan WebGPU, FP32 (no `shader-f16`), with
+14 eligible, unlabeled DriveBC car crops:
+
+| Mode | Median ms / car | Cars / second |
+| --- | ---: | ---: |
+| Before changes, individual | 32.2 | 31.1 |
+| Optimized individual | 28.7 | 34.8 |
+| 2-car GPU batch | 25.7 | 39.0 |
+| 4-car GPU batch | 24.4 | 41.1 |
+| 8-car GPU batch | 23.8 | 42.1 |
+
+Eight-car throughput improved about **35%** over the previous individual path.
+Each measurement uses three warmups and fifteen timed calls on the first N crops;
+separate equivalence checks cover all fourteen crops, including partial batches.
+Every batch retained identical view scores and angles on this GPU. All nine
+exports also matched their original graphs on independent deterministic inputs
+using native ORT CPU, including FP16 exports. These checks establish export
+fidelity, not accuracy. Warm timings exclude downloads, model initialization
+(about 2–3 seconds in this run), image decoding and crop preparation. Hardware,
+drivers, queue occupancy and other workloads affect speed; these measurements
+are not a universal guarantee of optimal kernels. Full results and crop
+provenance: [benchmark report](docs/benchmarks/2026-10-20-gtx1080ti.json).
+
+Reproduce browser timing (Node 20+ and a working hardware WebGPU adapter):
+
+```sh
+npm ci
+npx playwright install chromium
+npm run benchmark:gpu
+# Use an installed Chrome/Chromium instead:
+GPU_BENCH_CHROME=/path/to/chrome npm run benchmark:gpu
+# Optionally supply N crops as packed float32 RGB CHW, each 3×224×224:
+npm run benchmark:gpu -- --crops=/path/to/crops.f32
+```
+
+The default benchmark uses deterministic synthetic inputs and explicitly reports
+this. It rejects CPU fallback and software GPU adapters, reports warm throughput
+and cold latency, and checks every input against individual inference. To compare
+an earlier worker, pass `--baseline-worker=/path/to/original-worker.js` alongside
+`--crops`. On Linux the benchmark requests Vulkan WebGPU; the interactive app
+uses the browser's normal adapter selection.
+
+Rebuild/validate the batch graphs without downloading training checkpoints:
+
+```sh
+python -m pip install onnx onnxruntime numpy
+python -m pipeline.export_gpu_batches
+python scripts/validate-gpu-batches.py
+npm test
+```
+
+## Complete facing coverage and spatial direction evidence
+
+The browser now runs the facing model on **every valid YOLO car box** on viewed
+feeds. Tiny and frame-edge crops keep their numerical diagnostics but still
+abstain from direction estimates, preserving the existing quality thresholds.
+Unsupported vehicle classes remain unresolved. Status distinguishes model runs,
+quality abstentions, queued work and errors; **Retry failed facing jobs** retries
+execution errors. Existing cached pre-inference abstentions are refreshed under
+the new facing version.
+
+Temporal results now add motion only to matching detection fingerprints. They
+cannot replace, remove or reorder the current YOLO boxes. Facing results are
+saved by camera, photo hash and exact crop fingerprint, including browser YOLO
+layouts that differ from a published layout. Late temporal writes are rejected
+when their detector layout is stale.
+
+The camera explorer has a **Show all vehicle direction vectors** overlay and
+**Draw direction references** control. Drag from an arrow's tail to its head to
+place several spatial references, or enter normalized coordinates under
+**Reference arrows and coordinates**. Up to 64 references can be retained per
+camera. Undo or clear annotations with the adjacent buttons.
+
+A conservative **rule-based meta-classifier** combines mirror-verified facing,
+road geometry, validated temporal motion and nearby user references. References
+refine the local axis only when the trained facing evidence agrees. Crossings,
+opposing arrows and road/facing conflicts abstain. References cannot supply a
+missing vehicle identity or turn an uncertain crop into measured movement.
+Annotations transfer between frames only after aspect-ratio and background
+stability checks. Cyan vectors are appearance-based facing estimates; green
+vectors require validated displacement. These are image-space vectors, not
+compass bearings, metric speed or a statistically calibrated traffic model.
+
+Photos, detector/facing diagnostics, road context, temporal evidence and fused
+heading records are retained in **IndexedDB**, attached to the exact saved frame.
+Camera reference arrows also persist there. Model weights use the separate,
+checksummed Cache Storage cache. No inference, photo or annotation data is
+uploaded to a storage server. The existing photo size/age limits still prune
+photos and frame records; annotations are cleared separately. **Keep data on
+this device** requests persistent storage from the browser; the browser may
+refuse, and clearing site data still removes everything.
+
+An installed service worker caches the static app shell and runtime files, so
+saved photos, annotations and results can be reopened offline after the initial
+visit. Camera photos are deliberately excluded from that shell cache so they
+remain subject to the IndexedDB retention limits. If published JSON is
+unavailable, the dashboard can restore a view from locally retained frames. A
+static HTTPS host (or localhost) is needed for the first visit; no running
+storage backend is needed for retention or later offline review. Python server
+SSE is now opt-in with `?serverEvents=1`; ordinary static hosting makes no API
+connection.
+
+Additional local efficiency measurements on the GTX 1080 Ti:
+
+| Work | Previous median | Optimized median |
+| --- | ---: | ---: |
+| Prepare 8 real car crops | 26.7 ms | 10.3 ms |
+| YOLO GPU worker call | 19.8 ms | 17.2 ms |
+| Road GPU worker call | 13.4 ms | 8.8 ms |
+
+Crop preparation reuses a bounded photo-decode cache and canvases; the benchmark
+needed one decode instead of 240 across 30 groups, with identical crop pixel
+hashes. Batched inference reuses its packing buffer and writes mirrored pixels
+directly. Batch mode no longer initializes an unused individual compact session.
+YOLO and road models now capture and replay their static GPU command graphs.
+Device-loss observers release old sessions when batch settings change, avoiding
+retention of obsolete batch buffers. Facing weights, model scores, resolution
+and confidence/mirror gates remain unchanged. Warm facing kernels are still
+compute-bound; these changes improve surrounding work rather than promising a
+faster ConvNeXt kernel. See the [efficiency report](docs/benchmarks/2026-10-20-spatial-efficiency.json).
+
+Run the browser regression with real hardware WebGPU:
+
+```sh
+npm ci
+npx playwright install chromium
+npm run test:browser
+# Or select an installed browser:
+GPU_BENCH_CHROME=/path/to/chrome npm run test:browser
+```
+
+It checks full model coverage, low-quality abstentions, stale temporal layouts,
+persistent annotations, a narrow viewport, and an offline reload **after stopping
+the fixture's static host**. The fixture is synthetic; numerical model fidelity
+is separately checked against the real crops above. Spatial fusion does not
+have a labeled DriveBC accuracy benchmark.

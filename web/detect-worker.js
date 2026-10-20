@@ -1,8 +1,8 @@
-importScripts('inference-runtime.js?v=webgl-1','detector.js?v=webgl-1');
+importScripts('inference-runtime.js?v=gpu-batch-1','detector.js?v=spatial-1');
 let sessionPromise;
 async function webglSpec(name){try{const r=await fetch('models/webgl-v1.json?v=webgl-1');if(!r.ok)return null;const spec=(await r.json())[name];return spec&&{...spec,file:'models/'+spec.file};}catch(_){return null;}}
 async function session(){
-  if(!sessionPromise){self.postMessage({phase:'loading'});sessionPromise=webglSpec('yolo').then(webgl=>new ModelRuntime.Session({file:'models/yolo11n.onnx'},null,webgl).initialize()).catch(error=>{sessionPromise=null;throw error;});}return sessionPromise;
+  if(!sessionPromise){self.postMessage({phase:'loading'});sessionPromise=webglSpec('yolo').then(webgl=>new ModelRuntime.Session({file:'models/yolo11n.onnx'},{file:'models/yolo11n.onnx',captureShapes:{output0:[1,84,8400]}},webgl).initialize()).catch(error=>{sessionPromise=null;throw error;});}return sessionPromise;
 }
 self.onmessage=async({data})=>{
   try{
@@ -10,6 +10,6 @@ self.onmessage=async({data})=>{
     try{output=await model.run({[model.inputNames[0]]:inputTensor});}finally{inputTensor.dispose?.();}
     const tensor=output[model.outputNames[0]],detections=YoloBoxes.decode(tensor.data,tensor.dims,data.geometry);
     for(const result of Object.values(output))result.dispose?.();
-    self.postMessage({id:data.id,detections,backend:model.backend,inference_ms:Math.round(performance.now()-start),fallback:model.fallback});
+    self.postMessage({id:data.id,detections,backend:model.backend,gpu_capture:!!model.capture,inference_ms:Math.round(performance.now()-start),fallback:model.fallback});
   }catch(error){self.postMessage({id:data.id,error:error.message||String(error)});}
 };

@@ -98,3 +98,15 @@ ORT's WebGL backend supports fewer operators and has several kernel bugs, so `pi
 First WebGL use compiles shaders (≈0.4–0.6 s once per worker). The car-facing models stay on WASM when WebGPU is missing: the compact model was slower on WebGL (two batch-1 calls), and the ~200 MB FP32 ConvNeXt checker crashed the tab under WebGL. With detection and road on the GPU, the facing worker no longer waits for them, but a difficult crop still costs roughly 0.85 s of CPU time on the tested Mac. Timings are single-machine measurements.
 
 Rebuild: `python -m pip install 'onnxsim>=0.4,<0.5'` then `python -m pipeline.export_webgl_models`.
+
+### Multi-car batch graphs
+
+`cfv-{fast,gpu,gpu32}-cars{2,4,8}.onnx` specialize the shipped facing graphs for
+4, 8, or 16 input views (an original/mirror pair for each car). They preserve all
+weights, operators, preprocessing and output semantics; only batch shapes change.
+`vehicle-facing-v2.json` records their checksums and shared external data.
+`fast` and `gpu` graphs address weight byte ranges inside the original compact
+and FP16 ONNX files, respectively. `gpu32` reuses the existing FP32 weight shards.
+Keep those original files byte-identical when publishing these derived graphs;
+regenerate them with `python -m pipeline.export_gpu_batches` if weights change.
+All nine derived graphs add about 1.7 MiB without duplicating the trained weights.

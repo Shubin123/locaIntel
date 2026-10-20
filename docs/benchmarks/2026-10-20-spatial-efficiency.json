@@ -1,0 +1,65 @@
+{
+  "date": "2026-10-20",
+  "gpu": "NVIDIA GeForce GTX 1080 Ti",
+  "runtime": "ONNX Runtime Web 1.20.1 / real Chromium WebGPU Vulkan",
+  "scene": "Cached DriveBC camera 238 JPEG from the prior benchmark; 8 eligible crops",
+  "method": "YOLO and road: 3 warmups, 25 timed calls per mode; transfer, inference and postprocessing included. Preprocessing: 30 groups of 8 crops; pixel hashes compared. Previous and optimized models use identical weights, preprocessing, confidence and mirror gates.",
+  "results": [
+    {
+      "kind": "detect",
+      "mode": "before",
+      "median_ms": 19.800000190734863,
+      "cold_ms": 1023.5,
+      "backend": "webgpu"
+    },
+    {
+      "kind": "detect",
+      "mode": "after",
+      "median_ms": 17.200000047683716,
+      "cold_ms": 926.7999999523163,
+      "backend": "webgpu",
+      "capture": true
+    },
+    {
+      "kind": "road",
+      "mode": "before",
+      "median_ms": 13.400000095367432,
+      "cold_ms": 1018.6000001430511,
+      "backend": "webgpu"
+    },
+    {
+      "kind": "road",
+      "mode": "after",
+      "median_ms": 8.799999952316284,
+      "cold_ms": 1005.4000000953674,
+      "backend": "webgpu",
+      "capture": true
+    },
+    {
+      "preprocessing": {
+        "reports": [
+          {
+            "mode": "before",
+            "cars": 8,
+            "median_ms": 26.699999809265137,
+            "decodes": 240
+          },
+          {
+            "mode": "after",
+            "cars": 8,
+            "median_ms": 10.299999952316284,
+            "decodes": 1
+          }
+        ],
+        "equal_pixels": true
+      }
+    }
+  ],
+  "fidelity": {
+    "detector": "identical normalized YOLO detections",
+    "road": "identical displayed road-probability grid",
+    "preprocessing": "identical SHA-256 hashes for all 8 crop pixel arrays",
+    "facing": "14/14 view classes, scores and angles unchanged across all tested GPU batch sizes"
+  },
+  "limitations": "Single local GPU; warm facing kernels remain compute-bound. Synthetic browser coverage fixture separately verifies all 5 boxes run, including tiny/clipped diagnostic crops. Spatial fusion is conservative rule-based inference, not a learned or probability-calibrated model."
+}

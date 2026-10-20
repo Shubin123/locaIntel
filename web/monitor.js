@@ -77,18 +77,29 @@
 
     saveTemporal(key,temporal){return this.enqueue(async()=>{
       const db=await this.open(),tx=db.transaction('frames','readwrite'),done=complete(tx),store=tx.objectStore('frames'),row=await request(store.get(key));
-      if(row){row.temporal=temporal;store.put(row);}await done;if(row)this.onChange({row,removedKeys:[]});return row;
+      if(row&&(!temporal.log?.detectionSignature||temporal.log.detectionSignature===JSON.stringify((row.browserResult?.detections||row.detections||[]).map(d=>JSON.stringify([d.label,d.box]))))){row.temporal=temporal;row.width=temporal.scene?.width||row.width;row.height=temporal.scene?.height||row.height;store.put(row);}await done;if(row)this.onChange({row,removedKeys:[]});return row;
     });}
 
     saveOrientation(key,index,result){return this.enqueue(async()=>{
       const db=await this.open(),tx=db.transaction('frames','readwrite'),done=complete(tx),store=tx.objectStore('frames'),row=await request(store.get(key));
-      if(row&&JSON.stringify([row.detections?.[index]?.label,row.detections?.[index]?.box])===result.fingerprint){row.facing={...row.facing,version:result.version,byDetection:{...row.facing?.byDetection,[index]:result}};store.put(row);}await done;if(row)this.onChange({row,removedKeys:[]});return row;
+      const matches=row&&[...(row.detections||[]),...(row.browserResult?.detections||[])].some(d=>JSON.stringify([d.label,d.box])===result.fingerprint);
+      if(matches){row.facing={...row.facing,version:result.version,byDetection:{...row.facing?.byDetection,[index]:result},byFingerprint:{...row.facing?.byFingerprint,[result.fingerprint]:result}};store.put(row);}await done;if(row)this.onChange({row,removedKeys:[]});return row;
     });}
 
     saveRoadScene(key,result){return this.enqueue(async()=>{
       const db=await this.open(),tx=db.transaction('frames','readwrite'),done=complete(tx),store=tx.objectStore('frames'),row=await request(store.get(key));
       if(row){row.roadScene=result;store.put(row);}await done;if(row)this.onChange({row,removedKeys:[]});return row;
     });}
+
+    saveHeadings(key,headings){return this.enqueue(async()=>{
+      const db=await this.open(),tx=db.transaction('frames','readwrite'),done=complete(tx),store=tx.objectStore('frames'),row=await request(store.get(key));
+      if(row){const valid=new Set([...(row.detections||[]),...(row.browserResult?.detections||[])].map(d=>JSON.stringify([d.label,d.box])));row.headings={...headings,byFingerprint:Object.fromEntries(Object.entries(headings.byFingerprint).filter(([key])=>valid.has(key)))};store.put(row);}
+      await done;if(row)this.onChange({row,removedKeys:[]});return row;
+    });}
+    saveReferences(cameraId,reference){return this.enqueue(async()=>{
+      const db=await this.open(),tx=db.transaction('settings','readwrite'),done=complete(tx);tx.objectStore('settings').put(reference,'direction-references:'+cameraId);await done;return reference;
+    });}
+    async references(){await this.chain;const db=await this.open(),tx=db.transaction('settings','readonly'),store=tx.objectStore('settings');const [keys,values]=await Promise.all([request(store.getAllKeys()),request(store.getAll())]);return new Map(keys.flatMap((key,i)=>String(key).startsWith('direction-references:')?[[String(key).slice(21),values[i]]]:[]));}
 
     async metadata(){await this.chain;const db=await this.open(),tx=db.transaction('frames','readonly');return request(tx.objectStore('frames').getAll());}
     async photo(hash){const db=await this.open(),tx=db.transaction('photos','readonly');return (await request(tx.objectStore('photos').get(hash)))?.blob||null;}

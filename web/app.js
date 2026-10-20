@@ -13,11 +13,14 @@ let announcementTimer;
 let timelineAt = null, historyRows = [], historyPatterns = null, playbackTimer = null;
 let archiveRevision=0,patternMemo=null,patternMemoKey='',lastMapVersion='';
 let powerProfile = Monitoring.profile((() => { try { return localStorage.getItem('locaintel.power'); } catch (_) { return 3; } })());
+const gpuBatchSizes=[1,2,4,8];
+let gpuBatchSize=(()=>{try{const n=Number(localStorage.getItem('locaintel.gpuBatch')||4);return gpuBatchSizes.includes(n)?n:4;}catch(_){return 4;}})();
 let autoRefreshTimer, archivePaintTimer, archiveReady = Promise.resolve(), archiveError = '', seekSerial = 0;
 const archiveMetadata = new Map(), historyPhotoSources = new Map(), publishedPhotoSources = new Map(), livePresentations = new Map();
 const historyPhotoLoads = new Map();
 const imageSizes = new Map(), cardNodes = new Map(), cardVersions = new Map(), markerNodes = new Map();
 const publishedImports = new Set(); let publishedImportRunning = false;
+const directionReferences=new Map(),headingWrites=new Map();let drawReference=false,referenceDrag=null,localHistoryOnly=false;
 const photoArchive = new Monitoring.PhotoArchive({ onChange: archiveChanged });
 function isLive() { return timelineAt == null; }
 function viewCameras() { return isLive() ? (data?.cameras || []) : historyRows; }
@@ -152,14 +155,14 @@ async function cachePublishedFrames(){
   try{
     const wanted=visibleSourceCameras();
     for(const c of wanted){
-      const key=c.id+':'+c.hash;if(publishedImports.has(key))continue;if(!isLive()||document.hidden)break;publishedImports.add(key);
+      const key=c.id+':'+c.hash;if(publishedImports.has(key))continue;if(!isLive()||document.hidden)break;
       await cameraSources.slot();
       try{
-        const response=await fetch(`${c.frame}?v=${c.hash.slice(0,12)}`);if(!response.ok)continue;
-        const blob=await response.blob();const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer())),b=>b.toString(16).padStart(2,'0')).join('');if(hash!==c.hash)continue;
+        await archiveReady;let blob=await photoArchive.photo(c.hash);
+        if(!blob){const response=await fetch(`${c.frame}?v=${c.hash.slice(0,12)}`);if(!response.ok)continue;blob=await response.blob();}const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer())),b=>b.toString(16).padStart(2,'0')).join('');if(hash!==c.hash)continue;
         let dimensions=imageSizes.get(hash);if(!dimensions&&typeof createImageBitmap==='function'){const bitmap=await createImageBitmap(blob);dimensions=[bitmap.width,bitmap.height];bitmap.close();}
         const source={hash,url:URL.createObjectURL(blob),blob,cameraId:c.id,checked:c.observed,width:dimensions?.[0],height:dimensions?.[1]};publishedPhotoSources.set(hash,source);
-        await archiveReady;await photoArchive.saveFrame(c,source,{observedAt:Date.parse(c.observed),analysisMode:'published',detections:c.detections,counts:c.counts,analysis:c.analysis});
+        await archiveReady;await photoArchive.saveFrame(c,source,{observedAt:Date.parse(c.observed),analysisMode:'published',detections:c.detections,counts:c.counts,analysis:c.analysis});publishedImports.add(key);
       }catch(error){if(error.name==='QuotaExceededError')cacheFailure(error);}finally{cameraSources.release();}
     }
   }finally{publishedImportRunning=false;}
@@ -177,16 +180,19 @@ const browserDetector = new BrowserDetector({
 });
 function localAnalysis(c){const source=sourceEntry(c);if(!source?.hash)return null;const current=browserDetector.get(source.hash);if(current)return current;const saved=archiveMetadata.get(c.id+':'+source.hash);const result=saved?.analysisMode==='browser'&&saved.detectorVersion===browserDetector.modelVersion?{version:saved.detectorVersion,detections:saved.detections,counts:saved.counts,observed:new Date(saved.observedAt).toISOString()}:saved?.browserResult;if(result?.version===browserDetector.modelVersion&&Array.isArray(result.detections))return{...result,status:'ready',hash:source.hash};return null;}
 function withTemporal(c){
-  const t=archiveMetadata.get(c.id+':'+c.hash)?.temporal;
-  if(!t)return c;
-  return {...c,detections:t.detections,analysis:{...c.analysis,states:t.log.states,motion:{status:t.log.status,temporal:t.log}}};
+  const t=archiveMetadata.get(c.id+':'+c.hash)?.temporal;if(!t)return c;
+  const detections=SpatialHeading.mergeTemporal(c.detections||[],t),states={moving:0,stationary:0,unknown:0};
+  for(const d of detections)if(vehicleLabels.includes(d.label))states[motionState(d)]++;
+  const sameLayout=t.log?.detectionSignature===SpatialHeading.detectionSignature(c.detections||[]);
+  return {...c,detections,analysis:{...c.analysis,states,...(sameLayout?{motion:{status:t.log.status,temporal:t.log}}:{})}};
 }
+
 const publishedRoads=new Map(),roadWrites=new Set();
 function persistRoad(source,index,result){const key=source.cameraId+':'+source.hash;if(roadWrites.has(key))return;roadWrites.add(key);archiveReady.then(()=>photoArchive.saveRoadScene(key,result)).catch(cacheFailure).finally(()=>roadWrites.delete(key));}
 // WebGL and WebGPU jobs don't compete with CPU work, so they need not serialize.
 const onGPU=backend=>backend==='webgpu'||backend==='webgl';
 const roadAnalyzer=new VehicleFacing.CropOrientation({
-  workerFactory:()=>new Worker('road-worker.js?v=webgl-1'),prepareCrop:RoadVision.prepare,delayMs:powerProfile.inferenceDelay,
+  workerFactory:()=>new Worker('road-worker.js?v=spatial-1'),prepareCrop:RoadVision.prepare,delayMs:powerProfile.inferenceDelay,
   isPaused:()=>!isLive()||document.hidden||(browserDetector.running&&!onGPU(browserDetector.backend)),
   isWanted:hash=>isLive()&&visibleSourceCameras().some(c=>baseDisplayedCamera(c).hash===hash),
   onChange:queueViewPaint,onResult:persistRoad
@@ -204,30 +210,40 @@ function persistFacing(source,index,result){
   archiveReady.then(()=>photoArchive.saveOrientation(key,index,result)).catch(cacheFailure).finally(()=>facingWrites.delete(task));
 }
 const facingAnalyzer=new VehicleFacing.CropOrientation({
-  delayMs:powerProfile.inferenceDelay,
+  batchSize:gpuBatchSize,delayMs:powerProfile.inferenceDelay,
   isPaused:()=>!isLive()||document.hidden||!$('facing-enabled').checked||(browserDetector.running&&!onGPU(browserDetector.backend)&&!onGPU(facingAnalyzer.backend))||(roadAnalyzer.running&&!onGPU(roadAnalyzer.backend)&&!onGPU(facingAnalyzer.backend)),
-  isWanted:hash=>isLive()&&visibleSourceCameras().some(c=>displayedCamera(c).hash===hash),
+  isWanted:hash=>isLive()&&visibleSourceCameras().some(c=>baseDisplayedCamera(c).hash===hash),
   onChange:queueViewPaint,
   onResult:persistFacing
 });
 function withFacing(c){
   const saved=archiveMetadata.get(c.id+':'+c.hash)?.facing,source={cameraId:String(c.id),hash:c.hash};
-  const validVersion=v=>v===VehicleFacing.VERSION||(c._archive&&v==='cfv-convnext-facing-v1');
-  return {...c,detections:(c.detections||[]).map((d,i)=>{const persisted=validVersion(saved?.version)&&validVersion(saved.byDetection?.[i]?.version)&&saved.byDetection?.[i]?.fingerprint===VehicleFacing.fingerprint(d)?saved.byDetection[i]:null;const o=persisted||(!c._archive?facingAnalyzer.get(source,d):null)||null;return {...d,orientation:o?{...o,road_direction:RoadVision.direction(d,o)}:null};})};
+  const validVersion=v=>v===VehicleFacing.VERSION||(c._archive&&['cfv-convnext-facing-v1','cfv-facing-cascade-v2'].includes(v));
+  return {...c,detections:(c.detections||[]).map((d,i)=>{const candidate=SpatialHeading.facing({facing:saved},d,i),persisted=validVersion(candidate?.version)?candidate:null;const o=persisted||(!c._archive?facingAnalyzer.get(source,d):null)||null;return {...d,orientation:o?{...o,road_direction:RoadVision.direction(d,o)}:null};})};
 }
-function displayedCamera(c) { return withFacing(withRoad(withTemporal(baseDisplayedCamera(c)))); }
+function displayedCamera(c) { const view=withFacing(withRoad(withTemporal(baseDisplayedCamera(c)))),size=imageSizes.get(view.hash);if(size){view._photoWidth=size[0];view._photoHeight=size[1];}return SpatialHeading.attach(view,archiveMetadata.get(view.id+':'+view.hash),directionReferences.get(String(view.id))); }
 function scheduleFacing(){
   if(!data||!isLive()||document.hidden||!$('facing-enabled').checked)return;
   for(const original of visibleSourceCameras()){
     const c=displayedCamera(original),source=c._renderSource;
-    if(!source?.blob||c._waitingForSource)continue;
+    if(!source?.blob)continue;
     for(const [i,d]of (c.detections||[]).entries())if(vehicleLabels.includes(d.label)){
       const identity={...source,cameraId:String(c.id)},row=archiveMetadata.get(c.id+':'+c.hash);
       if(!d.orientation||d.orientation.state==='queued')facingAnalyzer.request(identity,d,i,c.id===selectedCamera&&i===(selectedVehicle??c.detections.findIndex(d=>d.label==='car'))?1000:(c.id===selectedCamera?100:0)+(d.on_road===true?30:d.on_road===false?0:10));
-      else if(['estimated','unknown'].includes(d.orientation.state)&&row&&VehicleFacing.fingerprint(row.detections?.[i]||{})===d.orientation.fingerprint&&(row.facing?.byDetection?.[i]?.version!==VehicleFacing.VERSION||row.facing?.byDetection?.[i]?.fingerprint!==d.orientation.fingerprint))persistFacing(identity,i,d.orientation);
+      else if(['estimated','unknown'].includes(d.orientation.state)&&row&&SpatialHeading.facing(row,d,i)?.version!==VehicleFacing.VERSION)persistFacing(identity,i,d.orientation);
     }
   }
+    persistHeadingsForVisible();
   facingAnalyzer.wake();
+}
+function persistHeadingsForVisible(){
+  for(const original of visibleSourceCameras()){
+    const c=displayedCamera(original),key=c.id+':'+c.hash,row=archiveMetadata.get(key);if(!row)continue;
+    const byFingerprint=Object.fromEntries((c.detections||[]).filter(d=>d.heading&&d.orientation&&!['queued','processing','error'].includes(d.orientation.state)).map(d=>[VehicleFacing.fingerprint(d),d.heading]));
+    if(!Object.keys(byFingerprint).length)continue;const headings={version:SpatialHeading.VERSION,byFingerprint},value=signature(headings);
+    if(signature(row.headings)===value||headingWrites.get(key)===value)continue;headingWrites.set(key,value);
+    archiveReady.then(()=>photoArchive.saveHeadings(key,headings)).catch(cacheFailure).finally(()=>{if(headingWrites.get(key)===value)headingWrites.delete(key);});
+  }
 }
 function baseDisplayedCamera(c) {
   if(c._archive)return c;
@@ -291,6 +307,7 @@ async function loadVisibleSources(force = false) {
 }
 function sourceIsStale(c){const source=cameraSources.get(c.id);return !source||Date.now()-(Date.parse(source.attempted||source.checked)||0)>=powerProfile.refreshMs;}
 function scheduleSources() {
+  if(localHistoryOnly){loadSavedVisibleSources();return;}
   if (isLive() && !document.hidden && !refreshing && !sourceLoading && $('source-view').checked && visibleSourceCameras().some(sourceIsStale)) {
     queueMicrotask(() => { if (!sourceLoading) loadVisibleSources(); });
   }
@@ -411,7 +428,7 @@ function drawPicture(original, detail = false) {
     }
     picture.append(svg);
   }
-  if (!mismatched) {renderVectorLayer(picture,c,detail,...(imageSizes.get(c.hash)||[640,400]),selectedVehicle);renderFacingLayer(picture,c,detail,selectedVehicle);}
+  if (!mismatched) {renderHeadingLayer(picture,c,detail);renderVectorLayer(picture,c,detail,...(imageSizes.get(c.hash)||[640,400]),selectedVehicle);renderFacingLayer(picture,c,detail,selectedVehicle);}
   return picture;
 }
 function selectCamera(id) { if (id !== selectedCamera) selectedVehicle = null; selectedCamera = id; $('camera-select').value = id; renderDetail(); scheduleSources(); scheduleDetection();scheduleRoads();scheduleFacing(); }
@@ -435,10 +452,10 @@ function renderDetail() {
     const i = c.detections.indexOf(d), row = node('button', undefined, 'vehicle-row'), road = d.on_road === true ? 'road-supported' : d.on_road === false ? 'road not supported' : 'road unknown';
     row.dataset.key=c.hash+':'+i;row.type = 'button'; row.setAttribute('aria-pressed', String(selectedVehicle === i));
     row.onclick = () => { selectedVehicle = selectedVehicle === i ? null : i; selectedVehicleFrame = c.hash; renderDetail();scheduleFacing(); };
-    row.append(node('span', `#${i + 1} ${d.label} · ${Math.round(d.confidence * 100)}%`), node('span', `${VehicleFacing.description(d.orientation)}${d.orientation?.road_direction?.state==='estimated'?' · road direction '+d.orientation.road_direction.direction:''} · ${motionDescription(d)} · ${road}`));
+    row.append(node('span', `#${i + 1} ${d.label} · ${Math.round(d.confidence * 100)}%`), node('span', `${VehicleFacing.description(d.orientation)}${d.heading?.direction?' · '+(d.heading.measured_motion?'Measured heading ':'Estimated facing direction ')+d.heading.direction:''}${d.orientation?.road_direction?.state==='estimated'?' · road direction '+d.orientation.road_direction.direction:''} · ${motionDescription(d)} · ${road}`));
     return row;
   });
-  renderFacingInspector(c);
+  renderFacingInspector(c);renderHeadingControls(c);
   SmoothUI.list($('vehicle-list'),list.length?list:[Object.assign(node('p',c._archive&&!c._analysisAvailable?'No saved analysis for this photo.':'No vehicles detected.','widget-note'),{id:'no-detections'})]);
   renderTimeline();
   notifyPane('detail', 'Camera explorer', [c.id, c.hash, c.analysis, c.detections, sample, selectedVehicle, $('vector-overlay').checked, $('vector-scale').value, $('heat-overlay').checked, $('road-overlay').checked, sourceEntry(original)?.hash, sourceEntry(original)?.error, localAnalysis(original)?.status], $('detail-updated'), $('detail-pane'), data.generated);
@@ -577,7 +594,7 @@ async function refresh(fromSource = false) {
     const results = await Promise.allSettled(['latest', 'patterns'].map(async name => {
       const r = await fetch(`data/${name}.json?t=${stamp}`, { cache: 'no-store' }); if (!r.ok) throw Error('HTTP ' + r.status); return r.json();
     }));
-    if (results[0].status === 'fulfilled') apply(results[0].value, results[1].status === 'fulfilled' ? results[1].value : null);
+    if (results[0].status === 'fulfilled') {localHistoryOnly=false;apply(results[0].value, results[1].status === 'fulfilled' ? results[1].value : null);}
     else { analysisError = true; if (!data) throw results[0].reason; }
     historyError = results[1].status === 'rejected';
     const sources = fromSource ? await loadVisibleSources(true) : [];
@@ -585,6 +602,7 @@ async function refresh(fromSource = false) {
     $('refresh-result').textContent = (fromSource ? (sources.length ? `${sources.length - failed}/${sources.length} visible camera images checked directly with DriveBC.${failed ? ' ' + failed + ' source requests failed; last good frames retained.' : ''}` : 'No visible cameras match the current filters.') : 'Published analysis checked.') + (analysisError ? ' Analysis refresh failed; previous results retained.' : ' Analysis published ' + new Date(data.generated).toLocaleString() + '.') + (historyError ? ' Pattern history unavailable; prior history retained.' : '');
   } catch (e) {
     $('refresh-result').textContent = 'Refresh failed. Try again shortly.' + (data ? ' Keeping the last loaded analysis.' : '');
+    if(!data&&await restoreLocalArchive()){ $('refresh-result').textContent='Showing photos and analysis saved in this browser. Network sources are unavailable.';return;}
     if (!data) { $('status').textContent = 'Snapshot cache unavailable'; $('message').textContent = 'The workflow has not published a camera catalog yet, or the network is unavailable.'; }
   } finally { refreshing = false; button.disabled = false; button.textContent = '↻ Refresh from DriveBC'; button.removeAttribute('aria-busy'); scheduleSources(); }
 }
@@ -596,12 +614,23 @@ $('motion-only').onclick = () => { $('source-view').checked = false; $('heat-ove
 $('show-all-vectors').onclick = () => { selectedVehicle = null; renderDetail(); };
 $('camera-select').addEventListener('change', () => selectCamera($('camera-select').value));
 $('refresh').onclick=()=>refresh(true);$('more').onclick=()=>{limit+=24;render();};
-if (!location.hostname.endsWith('github.io')) {
+if (new URLSearchParams(location.search).get('serverEvents')==='1') {
   const stream = new EventSource('api/events'); stream.onmessage = async e => { const p = JSON.parse(e.data); if(p.cameras){if(isLive())apply(p);else data=p;} }; stream.onerror = () => stream.close();
 }
 
 // Monitoring preferences and persistent local history.
 $('power-budget').addEventListener('input',()=>setPower($('power-budget').value));
+function setGPUBatch(value){
+  gpuBatchSize=gpuBatchSizes[Math.max(0,Math.min(3,Number(value)||0))];
+  $('gpu-batch').value=gpuBatchSizes.indexOf(gpuBatchSize);
+  const label=gpuBatchSize===1?'Off · one car':'Up to '+gpuBatchSize+' cars';
+  $('gpu-batch-label').value=label;$('gpu-batch').setAttribute('aria-valuetext',label);
+  $('gpu-batch-description').textContent=gpuBatchSize===1?'Process one car at a time with lower GPU memory use. Both verification views stay enabled.':'Process up to '+gpuBatchSize+' cars together on the GPU. Higher batches can improve throughput but use more GPU memory and model-cache storage. Small queues run immediately; unsupported batches use individual inference. Photo storage is separate.';
+  try{localStorage.setItem('locaintel.gpuBatch',String(gpuBatchSize));}catch(_){}
+  facingAnalyzer.setBudget({batchSize:gpuBatchSize});queueViewPaint();
+}
+$('gpu-batch').addEventListener('input',()=>setGPUBatch($('gpu-batch').value));
+setGPUBatch(gpuBatchSizes.indexOf(gpuBatchSize));
 let seekTimer;
 $('timeline-position').addEventListener('input',()=>{stopPlayback();const time=Number($('timeline-position').value);timelineAt=time;updateBackgroundBudget();$('timeline-title').textContent='Reviewing '+new Date(time).toLocaleString();clearTimeout(seekTimer);seekTimer=setTimeout(()=>seekHistory(time),120);});
 $('timeline-position').addEventListener('change',()=>{clearTimeout(seekTimer);seekHistory(Number($('timeline-position').value));});
@@ -609,26 +638,27 @@ $('timeline-date').addEventListener('change',()=>{const time=new Date($('timelin
 $('go-live').onclick=goLive;$('timeline-prev').onclick=()=>stepHistory(-1);$('timeline-next').onclick=()=>stepHistory(1);$('timeline-play').onclick=startPlayback;
 async function configureStorage(){try{archiveError='';$('cache-status').classList.remove('cache-error');await archiveReady;await photoArchive.configure({budgetBytes:Number($('cache-limit').value)*Monitoring.MB,retentionMs:Number($('cache-retention').value)*3600000});await updateArchiveUI();}catch(error){cacheFailure(error);}}
 $('cache-limit').addEventListener('change',configureStorage);$('cache-retention').addEventListener('change',configureStorage);
+$('keep-browser-data').onclick=async()=>{try{const granted=await navigator.storage?.persist?.();$('retention-status').textContent=granted?'Browser persistence granted. Photos still follow your size and age limits.':'Browser persistence was not granted. Saved data remains subject to browser eviction.';}catch(error){$('retention-status').textContent=error.message;}};
 $('clear-history').onclick=async()=>{if(!confirm('Delete saved camera photos from this browser? This cannot be undone.'))return;try{await photoArchive.clear();for(const source of historyPhotoSources.values())URL.revokeObjectURL(source.url);historyPhotoSources.clear();goLive({refreshSources:false});await updateArchiveUI();}catch(error){cacheFailure(error);}};
 document.addEventListener('visibilitychange',()=>{if(document.hidden)stopPlayback();updateBackgroundBudget();if(!document.hidden&&isLive()){scheduleSources();scheduleDetection();}});
 window.addEventListener('monitor-frame-commit',releaseOldPhotoURLs);
-archiveReady=photoArchive.initialize().then(async()=>{const rows=await photoArchive.metadata();for(const row of rows){archiveMetadata.set(row.key,row);scheduleTemporal(row);}for(const row of rows.filter(r=>r.analysisMode==='browser'&&r.detectorVersion===browserDetector.modelVersion&&Array.isArray(r.detections)).sort((a,b)=>b.observedAt-a.observedAt).slice(0,128))browserDetector.entries.set(row.hash,{status:'ready',hash:row.hash,version:row.detectorVersion,detections:row.detections,counts:row.counts||{},observed:new Date(row.observedAt).toISOString()});archiveRevision++;await updateArchiveUI();}).catch(cacheFailure);
+archiveReady=photoArchive.initialize().then(async()=>{const rows=await photoArchive.metadata();for(const row of rows){archiveMetadata.set(row.key,row);scheduleTemporal(row);}for(const [id,reference]of await photoArchive.references())directionReferences.set(id,reference);for(const row of rows.filter(r=>r.analysisMode==='browser'&&r.detectorVersion===browserDetector.modelVersion&&Array.isArray(r.detections)).sort((a,b)=>b.observedAt-a.observedAt).slice(0,128))browserDetector.entries.set(row.hash,{status:'ready',hash:row.hash,version:row.detectorVersion,detections:row.detections,counts:row.counts||{},observed:new Date(row.observedAt).toISOString()});archiveRevision++;await updateArchiveUI();}).catch(cacheFailure);
 setPower(powerProfile.level);refresh(true);
 
 // Temporal work runs serially with the same device budget as inference.
 const temporalPending=new Set(),hoverCards=new WeakSet();let temporalRunning=false;
 function scheduleTemporal(row){
-  if(!row.detections||!isLive())return;
+  if(!SpatialHeading.frameDetections(row).length||!isLive())return;
   temporalPending.add(row.cameraId);setTimeout(runTemporal,0);
 }
 async function runTemporal(){
   if(temporalRunning||!isLive()||document.hidden||!temporalPending.size)return;
   temporalRunning=true;const id=temporalPending.values().next().value;temporalPending.delete(id);
   try{
-    const rows=[...archiveMetadata.values()].filter(r=>r.cameraId===id&&r.detections).sort((a,b)=>a.observedAt-b.observedAt).slice(-3),latest=rows.at(-1);
-    if(latest&&signature(latest.temporal?.log?.frameHashes)!==signature(rows.map(r=>r.hash))){const frames=[];
-      for(const row of rows){const blob=await photoArchive.photo(row.hash);if(!blob)continue;frames.push({...row,...await TemporalTraffic.features(blob,row.detections)});}
-      if(frames.length){const result=TemporalTraffic.analyze(frames);await photoArchive.saveTemporal(latest.key,result);queueViewPaint();}
+    const rows=[...archiveMetadata.values()].filter(r=>r.cameraId===id&&SpatialHeading.frameDetections(r).length).sort((a,b)=>a.observedAt-b.observedAt).slice(-3),latest=rows.at(-1);
+    if(latest&&(signature(latest.temporal?.log?.frameHashes)!==signature(rows.map(r=>r.hash))||latest.temporal?.log?.detectionSignature!==SpatialHeading.detectionSignature(SpatialHeading.frameDetections(latest)))){const frames=[];
+      for(const row of rows){const blob=await photoArchive.photo(row.hash);if(!blob)continue;frames.push({...row,...await TemporalTraffic.features(blob,SpatialHeading.frameDetections(row))});}
+      if(frames.length){const result=TemporalTraffic.analyze(frames);result.log.detectionSignature=SpatialHeading.detectionSignature(frames.at(-1).detections);result.scene={background:frames.at(-1).background,pixelSignature:frames.at(-1).pixelSignature,width:frames.at(-1).width,height:frames.at(-1).height};await photoArchive.saveTemporal(latest.key,result);queueViewPaint();}
     }
   }catch(error){console.warn('Temporal analysis unavailable',error);}
   finally{temporalRunning=false;if(temporalPending.size)setTimeout(runTemporal,powerProfile.inferenceDelay+50);}
@@ -662,16 +692,17 @@ function renderTemporalLog(){
   const version=signature([selectedCamera,rows.map(r=>[r.hash,r.temporal.log,r.facing,r.roadScene])]);if(pane.dataset.version===version)return;pane.dataset.version=version;
   const summary=node('summary',`Saved motion evidence · ${rows.length} observations`),explain=node('p','Three-frame appearance matching with a stable-background gate. Blue means persistent position across distinct images; it does not prove the same vehicle stayed continuously. Green vectors require two consistent steps ≤15 seconds apart. Longer gaps retain occupancy and turnover evidence; individual movement remains unresolved.');
   const list=node('ol');for(const row of rows.slice(-20).reverse()){const l=row.temporal.log;list.append(node('li',`${new Date(row.observedAt).toLocaleString()} · ${l.status.replaceAll('_',' ')} · ${l.states.moving} moving / ${l.states.stationary} persistent position / ${l.states.unknown} unresolved${l.turnover?` · ${l.turnover.arrivals} unmatched arrivals / ${l.turnover.departures} unmatched departures`:''}`));}
-  if(motionDownloadURL)URL.revokeObjectURL(motionDownloadURL);motionDownloadURL=URL.createObjectURL(new Blob([JSON.stringify(rows.map(r=>({cameraId:r.cameraId,hash:r.hash,...r.temporal,facing:r.facing||null,road:r.roadScene||null})),null,2)],{type:'application/json'}));const download=node('a','Download camera motion log (JSON)');download.href=motionDownloadURL;download.download=`camera-${selectedCamera}-motion.json`;pane.replaceChildren(summary,explain,list,download);
+  if(motionDownloadURL)URL.revokeObjectURL(motionDownloadURL);motionDownloadURL=URL.createObjectURL(new Blob([JSON.stringify(rows.map(r=>({cameraId:r.cameraId,hash:r.hash,...r.temporal,facing:r.facing||null,road:r.roadScene||null,headings:r.headings||null,directionReferences:directionReferences.get(r.cameraId)||null})),null,2)],{type:'application/json'}));const download=node('a','Download camera motion log (JSON)');download.href=motionDownloadURL;download.download=`camera-${selectedCamera}-motion.json`;pane.replaceChildren(summary,explain,list,download);
 }
 
 try{$('facing-enabled').checked=localStorage.getItem('locaintel.facing')!=='off';}catch(_){}
+$('retry-facing').onclick=()=>{facingAnalyzer.retryFailed();scheduleFacing();queueViewPaint();};
 $('facing-enabled').addEventListener('change',()=>{try{localStorage.setItem('locaintel.facing',$('facing-enabled').checked?'on':'off');}catch(_){}facingAnalyzer.setBudget({delayMs:powerProfile.inferenceDelay});roadAnalyzer.setBudget({delayMs:powerProfile.inferenceDelay});scheduleFacing();queueViewPaint();});
 function renderFacingStatus(snapshots){
-  const ds=snapshots.flatMap(vehicles),totals={toward_camera:0,away_from_camera:0,side:0,unresolved:0};let completed=0;
+  const ds=snapshots.flatMap(vehicles).filter(d=>d.label==='car'),totals={toward_camera:0,away_from_camera:0,side:0,unresolved:0};let completed=0;
   for(const d of ds){if(d.orientation&&!['queued','processing'].includes(d.orientation.state))completed++;if(d.orientation?.state!=='estimated'){totals.unresolved++;continue;}if(d.orientation.facing==='toward_camera'||d.orientation.facing==='away_from_camera')totals[d.orientation.facing]++;else totals.side++;}
   SmoothUI.list($('facing-totals'),Object.entries(totals).map(([key,n])=>{const cell=node('div');cell.dataset.key=key;cell.append(node('strong',String(n)),node('span',{toward_camera:'FACING CAMERA',away_from_camera:'FACING AWAY',side:'SIDE VIEW',unresolved:'UNRESOLVED / WAITING'}[key]));return cell;}));
-  $('facing-status').textContent=!isLive()?'Saved facing estimates at the timeline cursor; no new crop inference.':!$('facing-enabled').checked?'New facing inference paused; saved estimates remain visible.':facingAnalyzer.phase==='loading'?'Loading the cached vehicle-view model (GPU where available); YOLO boxes stay visible.':facingAnalyzer.phase==='error'?'Facing model unavailable. Refresh retries failed crops; vehicle boxes and cached history remain available.':`${ds.filter(d=>d.orientation?.road_direction?.state==='estimated').length} road-aligned directions · ${completed}/${ds.length} filtered vehicle crops have results · ${facingAnalyzer.queue.length} queued${facingAnalyzer.backend==='webgl'?' · GPU / WebGL':facingAnalyzer.backend==='webgpu'?' · GPU / WebGPU':facingAnalyzer.backend==='wasm'?' · CPU fallback / WASM':''}${facingAnalyzer.path==='fast-verified'?' · fast verified':facingAnalyzer.path==='full-resolution'?' · full-resolution check':''}${facingAnalyzer.backend==='wasm'&&facingAnalyzer.fallback?' · '+facingAnalyzer.fallback:''}${Number.isFinite(facingAnalyzer.lastInferenceMs)?' · '+(facingAnalyzer.lastReused?'exact crop reused':facingAnalyzer.lastInferenceMs+' ms / crop'):''}${facingAnalyzer.running?' · analyzing one crop':''}. Analysis runs on viewed feeds. Tiny, clipped and unsupported crops abstain. Scores are not calibrated probabilities.`;
+  $('facing-status').textContent=!isLive()?'Saved facing estimates at the timeline cursor; no new crop inference.':!$('facing-enabled').checked?'New facing inference paused; saved estimates remain visible.':facingAnalyzer.phase==='loading'?'Loading the cached vehicle-view model (GPU where available); YOLO boxes stay visible.':facingAnalyzer.phase==='error'?'Facing model unavailable. Refresh retries failed crops; vehicle boxes and cached history remain available.':`${ds.filter(d=>d.orientation?.road_direction?.state==='estimated').length} road-aligned directions · ${completed}/${ds.length} car boxes have facing results · ${ds.filter(d=>d.orientation?.model_ran).length} evaluated by the model · ${ds.filter(d=>d.orientation?.quality_abstention).length} low-quality abstentions · ${ds.filter(d=>d.orientation?.state==='error').length} errors · ${facingAnalyzer.queue.length} queued${facingAnalyzer.backend==='webgl'?' · GPU / WebGL':facingAnalyzer.backend==='webgpu'?' · GPU / WebGPU':facingAnalyzer.backend==='wasm'?' · CPU fallback / WASM':''}${facingAnalyzer.path==='fast-verified'?' · fast verified':facingAnalyzer.path==='full-resolution'?' · full-resolution check':''}${facingAnalyzer.backend==='wasm'&&facingAnalyzer.fallback?' · '+facingAnalyzer.fallback:''}${Number.isFinite(facingAnalyzer.lastInferenceMs)?' · '+(facingAnalyzer.lastReused?'exact crop reused':facingAnalyzer.lastInferenceMs+' ms / crop'):''}${facingAnalyzer.actualBatchSize>1?' · GPU batch capacity '+facingAnalyzer.actualBatchSize+' cars':''}${facingAnalyzer.lastBatchCount>1?' · '+facingAnalyzer.lastBatchCount+' cars / last batch':''}${facingAnalyzer.batchError?' · batch fallback: '+facingAnalyzer.batchError:''}${facingAnalyzer.running?' · analyzing crops':''}. Every valid car box on viewed feeds runs through facing inference. Tiny and clipped crops retain diagnostics but abstain from direction estimates. Other vehicle classes are unsupported. Scores are not calibrated probabilities.`;
   notifyPane('facing','Vehicle facing',[totals,completed,facingAnalyzer.phase,facingAnalyzer.backend,facingAnalyzer.path,facingAnalyzer.lastInferenceMs,isLive(),$('facing-enabled').checked],$('facing-updated'),$('facing-pane'));
 }
 function renderFacingLayer(picture,c,detail,focused){
@@ -705,3 +736,71 @@ function renderRoadStatus(snapshots){
   $('road-status').textContent=`${ready.length}/${snapshots.length} filtered frames have road predictions · ${axes.length} local road axes · ${directions.length} road-aligned facing estimates. ${Number.isFinite(roadAnalyzer.lastInferenceMs)?roadAnalyzer.lastInferenceMs+' ms / scene · ':''}${roadAnalyzer.running?'Predicting one scene… ':''}${roadAnalyzer.backend==='webgl'?'GPU / WebGL':roadAnalyzer.backend==='webgpu'?'GPU / WebGPU':roadAnalyzer.backend==='wasm'?'CPU / WASM':roadAnalyzer.phase==='loading'?'Loading compact road model…':''}`;
   notifyPane('road','Road surface and direction',[ready.map(c=>[c.id,c.hash,c.analysis.road_backend]),axes.length,directions.length,roadAnalyzer.phase],$('road-updated'),$('road-pane'));
 }
+
+function headingScene(c){const row=archiveMetadata.get(c.id+':'+c.hash),size=imageSizes.get(c.hash);return {hash:c.hash,width:size?.[0]||row?.width||640,height:size?.[1]||row?.height||400,background:row?.temporal?.scene?.background};}
+function drawSpatialArrow(svg,start,end,color,label,dashed=false){
+  const add=(tag,attrs)=>{const n=document.createElementNS(svg.namespaceURI,tag);for(const [k,v]of Object.entries(attrs))n.setAttribute(k,v);svg.append(n);return n;};
+  const dx=end[0]-start[0],dy=end[1]-start[1],length=Math.hypot(dx,dy);if(length<1)return;
+  const ux=dx/length,uy=dy/length,head=Math.min(14,length*.3),base=[end[0]-ux*head,end[1]-uy*head];
+  const line=add('line',{x1:start[0],y1:start[1],x2:end[0],y2:end[1],stroke:color,'stroke-width':3,'vector-effect':'non-scaling-stroke',...(dashed?{'stroke-dasharray':'5 4'}:{})});
+  const title=document.createElementNS(svg.namespaceURI,'title');title.textContent=label;line.append(title);
+  add('polygon',{points:[end,[base[0]-uy*head*.5,base[1]+ux*head*.5],[base[0]+uy*head*.5,base[1]-ux*head*.5]].map(p=>p.join(',')).join(' '),fill:color});
+}
+function renderHeadingLayer(picture,c,detail){
+  picture.querySelector('.spatial-vector-layer')?.remove();if(!detail||!$('heading-field').checked)return;
+  const scene=headingScene(c),{width,height}=scene,reference=directionReferences.get(String(c.id)),svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.classList.add('spatial-vector-layer');svg.setAttribute('viewBox',`0 0 ${width} ${height}`);svg.setAttribute('preserveAspectRatio','none');svg.setAttribute('role','img');svg.setAttribute('aria-label','Vehicle direction evidence and user reference vectors');
+  for(const [i,v]of (reference?.vectors||[]).entries())drawSpatialArrow(svg,v.start.map((x,j)=>x*(j?height:width)),v.end.map((x,j)=>x*(j?height:width)),SpatialHeading.stableView(reference,scene)?'#c3a1ff':'#7b7d88',`Reference ${i+1}: user annotation; not measured movement`,true);
+  for(const [i,d]of (c.detections||[]).entries()){
+    if(!vehicleLabels.includes(d.label))continue;const h=d.heading,center=[(d.box[0]+d.box[2])/2*width,d.box[3]*height];
+    if(h?.vector){const unit=[h.vector[0]*width,h.vector[1]*height],n=Math.hypot(...unit),length=Math.min(width,height)*.09,start=center.map((v,j)=>v-unit[j]/n*length*.4),end=center.map((v,j)=>Math.max(2,Math.min((j?height:width)-2,v+unit[j]/n*length*.6)));drawSpatialArrow(svg,start,end,h.measured_motion?'#c5ff72':'#88e2f2',`Vehicle #${i+1}: ${h.measured_motion?'measured motion':'estimated facing'} ${h.direction}; ${h.sources.join(', ')}`,!h.measured_motion);}
+    else{const dot=document.createElementNS(svg.namespaceURI,'circle');for(const [k,v]of Object.entries({cx:center[0],cy:center[1],r:3,fill:'#efbd7b'}))dot.setAttribute(k,v);const title=document.createElementNS(svg.namespaceURI,'title');title.textContent=`Vehicle #${i+1}: ${d.orientation?.state==='queued'||d.orientation?.state==='processing'?'facing inference pending':h?.reason||'direction unresolved'}`;dot.append(title);svg.append(dot);}
+  }
+  picture.classList.toggle('drawing-reference',drawReference);picture.append(svg);
+}
+function renderHeadingControls(c){
+  const reference=directionReferences.get(String(c.id)),scene=headingScene(c),vectors=reference?.vectors||[],ds=vehicles(c),known=ds.filter(d=>d.heading?.direction),measured=known.filter(d=>d.heading.measured_motion);
+  $('heading-status').textContent=`${known.length}/${ds.length} vehicle directions · ${measured.length} measured · ${known.length-measured.length} appearance estimates · ${vectors.length}/64 reference arrows. ${vectors.length&&!SpatialHeading.stableView(reference,scene)?'Reference view is unverified or changed; annotations cannot influence classification. ':''}${drawReference?'Drag from tail to arrowhead on the camera photo. ':''}Cyan is estimated facing, green is measured motion, purple is your reference geometry. Arrow length is not speed.`;
+  $('draw-reference').setAttribute('aria-pressed',String(drawReference));$('draw-reference').textContent=drawReference?'Finish drawing':'Draw direction references';$('draw-reference').disabled=!isLive()||!c._renderSource?.blob;
+  $('undo-reference').disabled=!isLive()||!vectors.length;$('clear-references').disabled=!isLive()||!vectors.length;
+  const items=vectors.map((v,i)=>{const li=node('li');li.dataset.key=String(i);li.textContent=`${i+1}: (${v.start.map(n=>n.toFixed(2)).join(', ')}) → (${v.end.map(n=>n.toFixed(2)).join(', ')})`;return li;});SmoothUI.list($('reference-list'),items);
+}
+async function changeReferences(c,vectors){
+  const normalized=SpatialHeading.sanitize(vectors),scene=headingScene(c),prior=directionReferences.get(String(c.id));
+  if(normalized.length&&prior?.vectors?.length&&!SpatialHeading.stableView(prior,scene))throw Error('The camera view changed or is unverified. Clear its old references before adding new arrows.');
+  let background=scene.background;
+  if(!background&&c._renderSource?.blob)background=(await TemporalTraffic.features(c._renderSource.blob,c.detections||[])).background;
+  const reference={vectors:normalized,frameHash:c.hash,width:scene.width,height:scene.height,background,revision:(prior?.revision||0)+1,updatedAt:Date.now()};
+  await photoArchive.saveReferences(String(c.id),reference);directionReferences.set(String(c.id),reference);queueViewPaint();renderDetail();persistHeadingsForVisible();
+}
+$('heading-field').addEventListener('change',()=>{if(!$('heading-field').checked)drawReference=false;renderDetail();});
+$('draw-reference').onclick=()=>{drawReference=!drawReference;if(drawReference)$('heading-field').checked=true;renderDetail();};
+for(const [id,update]of [['undo-reference',v=>v.slice(0,-1)],['clear-references',()=>[]]])$(id).onclick=async()=>{try{const original=viewCameras().find(c=>c.id===selectedCamera);if(original)await changeReferences(displayedCamera(original),update(directionReferences.get(String(selectedCamera))?.vectors||[]));}catch(error){$('heading-status').textContent=error.message;}};
+$('detail-pane').addEventListener('pointerdown',e=>{
+  const picture=e.target.closest('#detail-picture');if(!drawReference||!picture||!isLive())return;
+  const original=viewCameras().find(c=>c.id===selectedCamera);if(!original)return;const c=displayedCamera(original),rect=picture.getBoundingClientRect();
+  e.preventDefault();picture.setPointerCapture(e.pointerId);referenceDrag={camera:c,picture,pointerId:e.pointerId,rect,start:[(e.clientX-rect.left)/rect.width,(e.clientY-rect.top)/rect.height]};
+});
+$('detail-pane').addEventListener('pointerup',async e=>{
+  if(!referenceDrag||referenceDrag.pointerId!==e.pointerId)return;const drag=referenceDrag;referenceDrag=null;e.preventDefault();
+  try{const original=viewCameras().find(c=>c.id===selectedCamera);if(!original||original.id!==drag.camera.id||displayedCamera(original).hash!==drag.camera.hash)throw Error('The displayed photo changed. Draw this arrow again on the current photo.');
+    const end=[Math.max(0,Math.min(1,(e.clientX-drag.rect.left)/drag.rect.width)),Math.max(0,Math.min(1,(e.clientY-drag.rect.top)/drag.rect.height))];
+    await changeReferences(drag.camera,[...(directionReferences.get(String(selectedCamera))?.vectors||[]),{start:drag.start,end}]);
+  }catch(error){$('heading-status').textContent=error.message;}
+});
+$('detail-pane').addEventListener('pointercancel',()=>{referenceDrag=null;});
+$('reference-coordinates').onsubmit=async e=>{e.preventDefault();try{const original=viewCameras().find(c=>c.id===selectedCamera);if(!original||!isLive())return;const v={start:[$('reference-x1'),$('reference-y1')].map(n=>Number(n.value)),end:[$('reference-x2'),$('reference-y2')].map(n=>Number(n.value))};await changeReferences(displayedCamera(original),[...(directionReferences.get(String(selectedCamera))?.vectors||[]),v]);}catch(error){$('heading-status').textContent=error.message;}};
+const savedSourceLoads=new Map();
+async function loadSavedVisibleSources(){
+  for(const c of visibleSourceCameras())if(!publishedPhotoSources.has(c.hash)&&!savedSourceLoads.has(c.hash)){
+    const work=photoArchive.photo(c.hash).then(blob=>{if(blob){publishedPhotoSources.set(c.hash,{hash:c.hash,blob,url:URL.createObjectURL(blob),cameraId:c.id,checked:c.observed});queueViewPaint();}}).catch(cacheFailure).finally(()=>savedSourceLoads.delete(c.hash));savedSourceLoads.set(c.hash,work);
+  }
+  await Promise.all(savedSourceLoads.values());
+}
+async function restoreLocalArchive(){
+  await archiveReady;const rows=Monitoring.latestAt([...archiveMetadata.values()],Date.now());if(!rows.length)return false;
+  localHistoryOnly=true;$('source-view').checked=false;
+  const cameras=rows.map(row=>({...row.camera,hash:row.hash,observed:new Date(row.observedAt).toISOString(),detections:SpatialHeading.frameDetections(row),counts:row.browserResult?.counts||row.counts||{},analysis:row.analysis||{},frame:'frames/'+row.cameraId+'.jpg'}));
+  apply({cameras,generated:new Date(Math.max(...rows.map(r=>r.observedAt))).toISOString(),catalog_size:cameras.length,model:'Saved browser analysis',errors:[]},Monitoring.patternsAt([...archiveMetadata.values()],Date.now()));await loadSavedVisibleSources();return true;
+}
+if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(error=>console.warn('Offline shell unavailable',error));

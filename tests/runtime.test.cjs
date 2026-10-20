@@ -1,13 +1,13 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),vm=require('vm');
 function runtime({gpu=false,half=true,createFails=false,runFails=false,halfFails=false,preferredMissing=false,hangGPU=false}={}){
- const created=[],imports=[],requests=[];let loseGPU;const device={lost:new Promise(resolve=>loseGPU=resolve)};
+ const created=[],imports=[],requests=[];let loseGPU,subscriptions=0;const loss=new Promise(resolve=>loseGPU=resolve),device={lost:{then:callback=>{subscriptions++;return loss.then(callback);}}};
  const ort={env:{wasm:{},webgpu:{device}},InferenceSession:{create:async(bytes,options)=>{
   const backend=options.executionProviders[0];created.push({backend,bytes:[...bytes],providers:options.executionProviders,externalData:options.externalData});
   if(backend==='webgpu'&&(createFails||(halfFails&&bytes[0]===2)))throw Error('unsupported GPU graph');
   return {inputNames:['image'],outputNames:['out'],release:async()=>{},run:async feeds=>{if(backend==='webgpu'&&hangGPU)return new Promise(()=>{});if(backend==='webgpu'&&runFails)throw Error('GPU device lost');return {out:backend,size:feeds?.image?.dims?.[0]};}};
  }}};
  const ctx=vm.createContext({URL,Response,Uint8Array,ort,location:{href:'https://example.test/app/worker.js'},importScripts:p=>imports.push(p),navigator:gpu?{gpu:{requestAdapter:async options=>{requests.push(options);return preferredMissing&&options?null:{features:new Set(half?['shader-f16']:[])};}}}:{},fetch:async url=>new Response(new Uint8Array([url.includes('half')?2:1]))});
- vm.runInContext(fs.readFileSync('web/inference-runtime.js','utf8'),ctx);return {m:ctx.ModelRuntime,created,imports,requests,loseGPU};
+ vm.runInContext(fs.readFileSync('web/inference-runtime.js','utf8'),ctx);return {m:ctx.ModelRuntime,created,imports,requests,loseGPU,subscriptions:()=>subscriptions};
 }
 const cpu={file:'full.onnx'},half={file:'half.onnx',requiresF16:true};
 test('GPU workers request high performance and explicitly select WebGPU',async()=>{const {m,created,imports,requests}=runtime({gpu:true}),s=await new m.Session(cpu,half).initialize();assert.equal(s.backend,'webgpu');assert.equal(requests[0].powerPreference,'high-performance');assert.deepEqual(created.map(c=>c.backend),['webgpu']);assert.equal(created[0].providers.length,1);assert(imports[0].includes('ort.webgpu'));});
@@ -41,3 +41,18 @@ test('without WebGPU, WebGL runs before CPU and leaves the CPU runtime global in
 test('WebGL graph or context failures fall back to the CPU model',async()=>{for(const options of [{createFails:true},{runFails:true}]){const {m,main,created}=webglRuntime(options),s=await new m.Session(cpu,null,glSpec).initialize(),out=await s.run({image:new main.Tensor('float32',Float32Array.from([1]),[1,1])});assert.equal(s.backend,'wasm');assert.match(s.fallback,/WebGL/);assert.deepEqual(created,['webgl','wasm']);assert.deepEqual([...out.logits.data],[10,11]);}});
 test('browsers without WebGL2 in workers go straight to CPU',async()=>{const {m,created}=webglRuntime({webgl2:false}),s=await new m.Session(cpu,null,glSpec).initialize();assert.equal(s.backend,'wasm');assert.match(s.fallback,/WebGL2 unavailable/);assert.deepEqual(created,['wasm']);});
 test('WebGPU stays preferred over WebGL when available',async()=>{const {m,created}=webglRuntime({gpu:true}),s=await new m.Session(cpu,null,glSpec).initialize();assert.equal(s.backend,'webgpu');assert.deepEqual(created,['webgpu']);});
+
+test('fixed GPU batches never execute incompatible shapes on CPU',async()=>{
+ for(const options of [{},{gpu:true,createFails:true}]){
+  const {m,created}=runtime(options),s=new m.Session(cpu,half,null,{gpuOnly:true});
+  await assert.rejects(s.initialize(),/unavailable|failed/);assert(created.every(c=>c.backend==='webgpu'));
+ }
+ const {m,created}=runtime({gpu:true,runFails:true}),s=await new m.Session(cpu,half,null,{gpuOnly:true}).initialize();
+ await assert.rejects(s.run({image:{dims:[8]}}),/GPU device lost/);assert(created.every(c=>c.backend==='webgpu'));
+});
+
+test('batch shape changes do not retain one device-loss callback per released session',async()=>{
+ const {m,subscriptions,loseGPU}=runtime({gpu:true});
+ for(let i=0;i<10;i++){const s=await new m.Session(cpu).initialize();await s.release();}
+ const active=await new m.Session(cpu).initialize();assert.equal(subscriptions(),1);loseGPU({message:'test loss'});await Promise.resolve();assert.match(active.lost.message,/test loss/);
+});

@@ -1,0 +1,256 @@
+{
+  "date": "2026-10-20",
+  "gpu": "NVIDIA GeForce GTX 1080 Ti",
+  "driver": "580.178.04",
+  "runtime": "Vendored ONNX Runtime Web 1.20.1",
+  "browser": "Playwright Chromium 1243; headless, Vulkan WebGPU",
+  "input_sha256": "f4000de3c5184ec04f70904bd2a26ca81a2aa632e6713185d35fce6d7e22fe6f",
+  "input_crops": [
+    {
+      "camera": "572",
+      "box": [
+        156.1071014404297,
+        163.998046875,
+        222.10781860351562,
+        203.62945556640625
+      ]
+    },
+    {
+      "camera": "2",
+      "box": [
+        388.918212890625,
+        232.22450256347656,
+        424.27099609375,
+        254.2255401611328
+      ]
+    },
+    {
+      "camera": "238",
+      "box": [
+        448.648193359375,
+        272.742431640625,
+        498.294677734375,
+        314.01995849609375
+      ]
+    },
+    {
+      "camera": "238",
+      "box": [
+        297.8263244628906,
+        230.37371826171875,
+        339.58416748046875,
+        264.4832458496094
+      ]
+    },
+    {
+      "camera": "238",
+      "box": [
+        441.7641296386719,
+        224.28445434570312,
+        481.2698669433594,
+        254.9578857421875
+      ]
+    },
+    {
+      "camera": "238",
+      "box": [
+        144.60568237304688,
+        347.1955261230469,
+        210.932373046875,
+        393.4292907714844
+      ]
+    },
+    {
+      "camera": "238",
+      "box": [
+        594.010986328125,
+        307.4352722167969,
+        681.146484375,
+        356.8873596191406
+      ]
+    },
+    {
+      "camera": "238",
+      "box": [
+        318.9105529785156,
+        197.0240936279297,
+        354.5073547363281,
+        221.6337127685547
+      ]
+    },
+    {
+      "camera": "238",
+      "box": [
+        198.33555603027344,
+        307.7193298339844,
+        275.4563293457031,
+        366.12310791015625
+      ]
+    },
+    {
+      "camera": "238",
+      "box": [
+        616.5234985351562,
+        217.5467529296875,
+        644.994873046875,
+        249.2176055908203
+      ]
+    },
+    {
+      "camera": "264",
+      "box": [
+        180.82911682128906,
+        243.91693115234375,
+        237.89988708496094,
+        285.6455993652344
+      ]
+    },
+    {
+      "camera": "7",
+      "box": [
+        221.56393432617188,
+        138.0455780029297,
+        266.4717102050781,
+        170.66696166992188
+      ]
+    },
+    {
+      "camera": "22",
+      "box": [
+        292.2301940917969,
+        199.94187927246094,
+        322.8523254394531,
+        229.30746459960938
+      ]
+    },
+    {
+      "camera": "22",
+      "box": [
+        96.73294830322266,
+        166.3877716064453,
+        127.05773162841797,
+        193.8081817626953
+      ]
+    }
+  ],
+  "scope": "Warm worker inference, first N real crops per batch; 3 warmups and 15 timed repetitions. Fidelity separately covers all 14 crops. Excludes photo loading, crop preparation and cold initialization. Crops are unlabeled; this is numerical fidelity, not an accuracy measurement. No software adapter or CPU fallback accepted.",
+  "run": {
+    "adapter": {
+      "vendor": "nvidia",
+      "architecture": "pascal",
+      "description": "",
+      "shader_f16": false
+    },
+    "input": ".cache/real-crops.f32",
+    "warmup": 3,
+    "samples": 15
+  },
+  "results": [
+    {
+      "mode": "before changes",
+      "size": 1,
+      "crops_per_call": 1,
+      "cold_ms": 2809,
+      "median_batch_ms": 32.200000047683716,
+      "p95_batch_ms": 49.5,
+      "median_car_ms": 32.200000047683716,
+      "cars_per_second": 31.055900575128547,
+      "capture": true,
+      "paths": [
+        "full-resolution"
+      ],
+      "fidelity": null
+    },
+    {
+      "mode": "current",
+      "size": 1,
+      "crops_per_call": 1,
+      "cold_ms": 1871.5,
+      "median_batch_ms": 28.699999809265137,
+      "p95_batch_ms": 39.60000014305115,
+      "median_car_ms": 28.699999809265137,
+      "cars_per_second": 34.84320580647436,
+      "capture": true,
+      "paths": [
+        "full-resolution"
+      ],
+      "fidelity": {
+        "crops": 14,
+        "matchingViews": 14,
+        "maxScoreError": 0,
+        "maxAngleError": 0
+      }
+    },
+    {
+      "mode": "current",
+      "size": 2,
+      "crops_per_call": 2,
+      "cold_ms": 2128.100000143051,
+      "median_batch_ms": 51.30000019073486,
+      "p95_batch_ms": 54.299999952316284,
+      "median_car_ms": 25.65000009536743,
+      "cars_per_second": 38.98635463087608,
+      "capture": true,
+      "paths": [
+        "full-resolution",
+        "full-resolution"
+      ],
+      "fidelity": {
+        "crops": 14,
+        "matchingViews": 14,
+        "maxScoreError": 0,
+        "maxAngleError": 0
+      }
+    },
+    {
+      "mode": "current",
+      "size": 4,
+      "crops_per_call": 4,
+      "cold_ms": 2210.199999809265,
+      "median_batch_ms": 97.40000009536743,
+      "p95_batch_ms": 108.59999990463257,
+      "median_car_ms": 24.350000023841858,
+      "cars_per_second": 41.06776176677077,
+      "capture": true,
+      "paths": [
+        "full-resolution",
+        "full-resolution",
+        "full-resolution",
+        "full-resolution"
+      ],
+      "fidelity": {
+        "crops": 14,
+        "matchingViews": 14,
+        "maxScoreError": 0,
+        "maxAngleError": 0
+      }
+    },
+    {
+      "mode": "current",
+      "size": 8,
+      "crops_per_call": 8,
+      "cold_ms": 2381.7000000476837,
+      "median_batch_ms": 190.20000004768372,
+      "p95_batch_ms": 191.09999990463257,
+      "median_car_ms": 23.775000005960464,
+      "cars_per_second": 42.060988422683366,
+      "capture": true,
+      "paths": [
+        "full-resolution",
+        "full-resolution",
+        "full-resolution",
+        "full-resolution",
+        "full-resolution",
+        "full-resolution",
+        "full-resolution",
+        "full-resolution"
+      ],
+      "fidelity": {
+        "crops": 14,
+        "matchingViews": 14,
+        "maxScoreError": 0,
+        "maxAngleError": 0
+      }
+    }
+  ]
+}

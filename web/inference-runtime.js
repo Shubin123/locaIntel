@@ -56,8 +56,21 @@
     }
     dispose(){for(const buffer of this.buffers)buffer.destroy();}
   }
+  // One device-loss subscription, with explicit removal of released sessions.
+  // Per-session promise callbacks otherwise retain packed batch buffers after
+  // every slider change until the entire GPU device is destroyed.
+  const observedDevices=new WeakMap();
+  function observeDevice(owner,device){
+    if(!device?.lost)return;
+    let state=observedDevices.get(device);
+    if(!state){state={sessions:new Set(),error:null};observedDevices.set(device,state);device.lost.then(info=>{
+      state.error=Error('GPU device lost: '+(info.message||info.reason||'unavailable'));
+      for(const session of state.sessions){session.lost=state.error;session.rejectLost?.(state.error);}state.sessions.clear();
+    });}
+    state.sessions.add(owner);owner.lossState=state;if(state.error)owner.lost=state.error;
+  }
   class Session{
-    constructor(cpu,gpu,webglSpec){this.cpu=cpu;this.gpuSpec=gpu;this.webglSpec=webglSpec;this.backend='wasm';this.fallback=null;this.session=null;this.variant=null;this.gpuErrors=[];}
+    constructor(cpu,gpu,webglSpec,{gpuOnly=false}={}){this.cpu=cpu;this.gpuSpec=gpu;this.webglSpec=webglSpec;this.gpuOnly=gpuOnly;this.backend='wasm';this.fallback=null;this.session=null;this.variant=null;this.gpuErrors=[];}
     async initialize(){
       const runtime=await start();
       // Lack of shader-f16 is not lack of a GPU. Try the compatible full-
@@ -65,10 +78,11 @@
       if(runtime.gpu){
         const candidates=[];
         for(const spec of (Array.isArray(this.gpuSpec)?this.gpuSpec:[this.gpuSpec]))if(spec&&(!spec.requiresF16||runtime.fp16))candidates.push(spec);
-        if(!candidates.some(spec=>spec.file===this.cpu.file))candidates.push(this.cpu);
+        if(!this.gpuOnly&&!candidates.some(spec=>spec.file===this.cpu.file))candidates.push(this.cpu);
         for(const spec of candidates)try{await this.useGPU(spec,!!spec.captureShapes);return this;}catch(error){this.gpuErrors.push(error.message);if(spec.captureShapes)try{await this.useGPU(spec,false);return this;}catch(retry){this.gpuErrors.push(retry.message);}}
         this.fallback='WebGPU initialization failed: '+this.gpuErrors.join('; ');
       }else this.fallback='WebGPU adapter unavailable in this browser';
+      if(this.gpuOnly)throw Error(this.fallback);
       if(this.webglSpec)try{await this.useWebGL();return this;}catch(error){this.fallback+='; WebGL failed: '+error.message;}
       await this.useCPU();return this;
     }
@@ -85,14 +99,16 @@
       for(const [name,t] of Object.entries(await this.session.run(inputs))){outputs[name]=new root.ort.Tensor('float32',Float32Array.from(t.data),t.dims);t.dispose?.();}
       return outputs;
     }
-    async release(){try{await this.session?.release();}catch(_){}this.captureIO?.dispose();this.captureIO=null;this.session=null;}
-    async useGPU(spec,capture){await this.release();const [graph,externalData]=await Promise.all([bytes(spec),Promise.all((spec.externalData||[]).map(async part=>({path:part.path,data:await bytes(part)})))]);this.session=await root.ort.InferenceSession.create(graph,{executionProviders:['webgpu'],graphOptimizationLevel:'all',enableGraphCapture:capture,...(externalData.length?{externalData}:{})});this.backend='webgpu';this.variant=spec.file;this.activeSpec=spec;this.capture=capture;this.lost=null;const session=this.session;this.loss=root.ort.env.webgpu.device?.lost?.then(info=>{const error=Error('GPU device lost: '+(info.message||info.reason||'unavailable'));if(this.session===session)this.lost=error;return error;});}
+    async release(){this.lossState?.sessions.delete(this);this.lossState=null;try{await this.session?.release();}catch(_){}this.captureIO?.dispose();this.captureIO=null;this.session=null;}
+    async useGPU(spec,capture){await this.release();const [graph,externalData]=await Promise.all([bytes(spec),Promise.all((spec.externalData||[]).map(async part=>({path:part.path,data:await bytes(part)})))]);this.session=await root.ort.InferenceSession.create(graph,{executionProviders:['webgpu'],graphOptimizationLevel:'all',enableGraphCapture:capture,...(externalData.length?{externalData}:{})});this.backend='webgpu';this.variant=spec.file;this.activeSpec=spec;this.capture=capture;this.lost=null;observeDevice(this,root.ort.env.webgpu.device);}
     async useCPU(){await this.release();this.session=await root.ort.InferenceSession.create(await bytes(this.cpu),{executionProviders:['wasm'],graphOptimizationLevel:'all'});this.backend='wasm';this.variant=this.cpu.file;this.capture=false;}
     async runGPU(feeds){
       if(this.backend==='webgpu'&&this.lost)throw this.lost;
       if(this.capture&&!this.captureIO)this.captureIO=new CapturedIO(this.session,feeds,this.activeSpec.captureShapes);
       const work=this.capture?this.captureIO.run(feeds):this.session.run(feeds);
-      return this.backend==='webgpu'&&this.loss?Promise.race([work,this.loss.then(error=>{throw error;})]):work;
+      if(this.backend!=='webgpu'||!this.lossState)return work;
+      let rejectLost;const lost=new Promise((_,reject)=>{rejectLost=reject;this.rejectLost=reject;});
+      try{return await Promise.race([work,lost]);}finally{if(this.rejectLost===rejectLost)this.rejectLost=null;}
     }
     async run(feeds,{cpuFeeds}={}){
       if(this.backend==='webgl')try{return await this.runWebGL(feeds);}catch(error){
@@ -104,7 +120,7 @@
         // An adapter may support the model but not command capture. Retry
         // ordinary GPU execution before falling back to the CPU provider.
         if(this.capture&&!this.lost)try{await this.useGPU(this.activeSpec,false);return await this.runGPU(feeds);}catch(retry){error=retry;}
-        this.fallback=error.message;await this.useCPU();return this.session.run(cpuFeeds?cpuFeeds():feeds);
+        this.fallback=error.message;if(this.gpuOnly)throw error;await this.useCPU();return this.session.run(cpuFeeds?cpuFeeds():feeds);
       }
     }
     get inputNames(){return this.session.inputNames;}get outputNames(){return this.session.outputNames;}
