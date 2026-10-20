@@ -65,3 +65,10 @@ test('core model cache updates serialize across workers, verify cached bytes and
  await b.bytes({file:'a.onnx',sha256});assert.equal(fetches,2);assert(events.some(e=>e.state==='cached'));
  stored.set('https://example.test/a.onnx',new Response(Uint8Array.of(99)));await a.bytes({file:'a.onnx',sha256});assert.equal(fetches,3);assert(events.some(e=>e.state==='repairing_cache'));assert(events.filter(e=>e.state==='saved_locally').length===3);
 });
+
+test('failed model updates preserve prior cached bytes and request checksum-pinned downloads',async()=>{
+ const crypto=require('node:crypto'),old=Uint8Array.of(1,2),expected=crypto.createHash('sha256').update(Uint8Array.of(3,4)).digest('hex'),events=[],downloads=[];let stored=new Response(old),writes=0;
+ const c=vm.createContext({URL,Response,Uint8Array,Promise,location:{href:'https://example.test/worker.js'},crypto:crypto.webcrypto,postMessage:e=>events.push(e.model_cache_update),caches:{open:async()=>({match:async()=>stored.clone(),put:async(_u,r)=>{stored=r;writes++;}})},fetch:async(url,options)=>{downloads.push({url,options});return new Response(old);}});
+ vm.runInContext(fs.readFileSync('web/inference-runtime.js','utf8'),c);
+ await assert.rejects(c.ModelRuntime.bytes({file:'model.onnx',sha256:expected}),/checksum mismatch/);assert.equal(writes,0);assert.deepEqual([...new Uint8Array(await stored.arrayBuffer())],[1,2]);assert.equal(new URL(downloads[0].url).searchParams.get('sha256'),expected);assert.equal(downloads[0].options.cache,'reload');assert(events.every(e=>e.scope==='worker_only'));
+});

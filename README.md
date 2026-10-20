@@ -417,8 +417,9 @@ The **Core model updates** panel shows queued downloads, checksum verification,
 local saves, cache hits and failures. Web Locks serialize these cache updates
 across model workers and browser tabs; browsers without Web Locks report that
 only per-worker serialization is available. This does not serialize GPU batches.
-A cached file with the wrong checksum is removed and downloaded again, and a
-failed download cannot replace a valid cached version.
+A cached file with the wrong checksum is ignored and replaced only after a
+checksum-verified download. Downloads use the expected checksum in their URL to
+avoid stale HTTP/CDN copies; a failed update leaves the previous cached bytes intact.
 
 On pushes and pull requests, GitHub Actions runs the real facing-model browser
 E2E using WASM on its CPU runner, plus unit and privacy tests. Deployment waits

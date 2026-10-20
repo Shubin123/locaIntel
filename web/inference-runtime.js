@@ -40,8 +40,9 @@
           const digest=[...new Uint8Array(await root.crypto.subtle.digest('SHA-256',buffer))].map(v=>v.toString(16).padStart(2,'0')).join('');return digest===spec.sha256;
         };
         let response=await cache?.match(url),buffer;
-        if(response){update('checking_local_cache');buffer=await response.arrayBuffer();if(await verified(buffer)){update('cached',{bytes:buffer.byteLength});return new Uint8Array(buffer);}await cache.delete(url);update('repairing_cache');}
-        update('downloading');response=await root.fetch(url);if(!response.ok)throw Error('Model HTTP '+response.status);buffer=await response.arrayBuffer();
+        if(response){update('checking_local_cache');buffer=await response.arrayBuffer();if(await verified(buffer)){update('cached',{bytes:buffer.byteLength});return new Uint8Array(buffer);}update('repairing_cache');}
+        const download=new URL(url);if(spec.sha256)download.searchParams.set('sha256',spec.sha256);
+        update('downloading');response=await root.fetch(download.href,{cache:'reload'});if(!response.ok)throw Error('Model HTTP '+response.status);buffer=await response.arrayBuffer();
         update('verifying',{bytes:buffer.byteLength});if(!await verified(buffer))throw Error('Model checksum mismatch');
         let stored=false;if(cache)try{await cache.put(url,new Response(buffer,{headers:{'content-type':'application/octet-stream'}}));stored=true;}catch(_){}
         update(stored?'saved_locally':'cache_unavailable',{bytes:buffer.byteLength});return new Uint8Array(buffer);
