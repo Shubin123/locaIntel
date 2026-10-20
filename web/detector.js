@@ -53,8 +53,8 @@
     } finally { image.close?.(); }
   }
   class BrowserDetector {
-    constructor({ workerFactory = () => new Worker('detect-worker.js?v=spatial-1'), prepare = preprocess, onChange = () => {}, onResult = () => {}, isWanted = () => true, isPaused = () => false, delayMs = 0, timeout = 120000 } = {}) {
-      Object.assign(this, { workerFactory, prepare, onChange, onResult, isWanted, isPaused, delayMs, timeout });
+    constructor({ workerFactory = () => new Worker('detect-worker.js?v=local-1'), prepare = preprocess, onChange = () => {}, onResult = () => {}, isWanted = () => true, isPaused = () => false, delayMs = 0, timeout = 120000, onModelUpdate = () => {} } = {}) {
+      Object.assign(this, { workerFactory, prepare, onChange, onResult, isWanted, isPaused, delayMs, timeout, onModelUpdate });
       this.entries = new Map(); this.pending = new Map(); this.queue = []; this.worker = null; this.waiting = new Map(); this.serial = 0; this.running = false; this.state = 'idle';this.modelVersion=MODEL_VERSION; this.cooldown = null;
     }
     get(hash) { return this.entries.get(hash); }
@@ -73,6 +73,7 @@
       if (this.worker) return;
       this.worker = this.workerFactory();
       this.worker.onmessage = ({ data }) => {
+        if(data.model_cache_update){this.onModelUpdate(data.model_cache_update);return;}
         if (data.phase) { this.state = data.phase; this.onChange(); return; }
         const waiter = this.waiting.get(data.id); if (!waiter) return;
         this.waiting.delete(data.id); clearTimeout(waiter.timer);

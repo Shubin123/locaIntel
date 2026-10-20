@@ -27,13 +27,30 @@
     }
     return webglLib;
   }
+  let cacheUpdates=Promise.resolve();
   async function bytes(spec){
-    const url=new URL(spec.file,root.location.href).href;let cache;try{cache=await root.caches.open('locaintel-models-v1');}catch(_){}
-    let response=await cache?.match(url),cached=!!response;if(!response){response=await root.fetch(url);if(!response.ok)throw Error('Model HTTP '+response.status);}
-    const buffer=await response.arrayBuffer();
-    if(spec.sha256){const digest=[...new Uint8Array(await root.crypto.subtle.digest('SHA-256',buffer))].map(v=>v.toString(16).padStart(2,'0')).join('');if(digest!==spec.sha256){await cache?.delete(url);throw Error('Model checksum mismatch');}}
-    if(cache&&!cached)try{await cache.put(url,new Response(buffer,{headers:{'content-type':'application/octet-stream'}}));}catch(_){}
-    return new Uint8Array(buffer);
+    const update=(state,extra={})=>root.postMessage?.({model_cache_update:{file:spec.file,state,at:Date.now(),scope:root.navigator?.locks?.request?'origin':'worker_only',...extra}});
+    update('queued');
+    const operation=async()=>{
+      try{
+        const url=new URL(spec.file,root.location.href).href;let cache;
+        try{cache=await root.caches.open('locaintel-models-v1');}catch(_){}
+        const verified=async buffer=>{
+          if(!spec.sha256)return true;
+          const digest=[...new Uint8Array(await root.crypto.subtle.digest('SHA-256',buffer))].map(v=>v.toString(16).padStart(2,'0')).join('');return digest===spec.sha256;
+        };
+        let response=await cache?.match(url),buffer;
+        if(response){update('checking_local_cache');buffer=await response.arrayBuffer();if(await verified(buffer)){update('cached',{bytes:buffer.byteLength});return new Uint8Array(buffer);}await cache.delete(url);update('repairing_cache');}
+        update('downloading');response=await root.fetch(url);if(!response.ok)throw Error('Model HTTP '+response.status);buffer=await response.arrayBuffer();
+        update('verifying',{bytes:buffer.byteLength});if(!await verified(buffer))throw Error('Model checksum mismatch');
+        let stored=false;if(cache)try{await cache.put(url,new Response(buffer,{headers:{'content-type':'application/octet-stream'}}));stored=true;}catch(_){}
+        update(stored?'saved_locally':'cache_unavailable',{bytes:buffer.byteLength});return new Uint8Array(buffer);
+      }catch(error){update('error',{error:error.message});throw error;}
+    };
+    // Origin-wide Web Locks serialize updates across model workers and tabs.
+    // Browsers lacking this API serialize within each worker and report it.
+    if(root.navigator?.locks?.request)return root.navigator.locks.request('locaintel-core-model-updates',operation);
+    update('queued',{scope:'worker_only'});const pending=cacheUpdates.then(operation);cacheUpdates=pending.catch(()=>{});return pending;
   }
   // Static GPU IO lets ORT replay its command graph rather than rebuilding
   // hundreds of per-car dispatches. Buffers stay owned by this session.

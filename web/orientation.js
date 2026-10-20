@@ -99,16 +99,16 @@
     return prepared.quality?{...base,state:'unknown',facing:'unknown',reason:prepared.quality,image_direction:undefined,facing_glyph:undefined,quality_abstention:true}:base;
   }
   class CropOrientation{
-    constructor({workerFactory=()=>new Worker('orientation-worker.js?v=paired-1'),prepareCrop=createPreparer(),onChange=()=>{},onResult=()=>{},isPaused=()=>false,isWanted=()=>true,delayMs=350,timeout=90000,batchSize=1}={}){
-      Object.assign(this,{workerFactory,prepareCrop,onChange,onResult,isPaused,isWanted,delayMs,timeout});this.batchSize=[1,2,4,8].includes(Number(batchSize))?Number(batchSize):1;this.version=VERSION;this.entries=new Map();this.visualEntries=new Map();this.queue=[];this.running=false;this.worker=null;this.serial=0;this.waiter=null;this.cooldown=null;this.phase='idle';
+    constructor({workerFactory=()=>new Worker('orientation-worker.js?v=local-1'),prepareCrop=createPreparer(),onChange=()=>{},onResult=()=>{},isPaused=()=>false,isWanted=()=>true,delayMs=350,timeout=90000,batchSize=1,retryDelays=[2000,10000],onModelUpdate=()=>{}}={}){
+      Object.assign(this,{workerFactory,prepareCrop,onChange,onResult,isPaused,isWanted,delayMs,timeout});this.retryDelays=retryDelays;this.onModelUpdate=onModelUpdate;this.batchSize=[1,2,4,8].includes(Number(batchSize))?Number(batchSize):1;this.version=VERSION;this.entries=new Map();this.visualEntries=new Map();this.queue=[];this.running=false;this.worker=null;this.serial=0;this.waiter=null;this.cooldown=null;this.phase='idle';
     }
     key(source,d){return source.cameraId+':'+source.hash+':'+fingerprint(d);}
     get(source,d){return this.entries.get(this.key(source,d));}
     request(source,d,index,priority=false){
-      const key=this.key(source,d);if(this.entries.has(key)){if(priority){const task=this.queue.find(t=>t.key===key);if(task){task.priority=Number(priority)||0;this.queue.sort((a,b)=>b.priority-a.priority);}}return;}
-      this.entries.set(key,{state:'queued',version:VERSION});const task={source,d,index,key,priority:Number(priority)||0};this.queue.push(task);this.queue.sort((a,b)=>b.priority-a.priority);if(this.batchSize>1)queueMicrotask(()=>this.pump());else this.pump();
+      const key=this.key(source,d),previous=this.entries.get(key);if(previous?.state==='error'&&(previous.retry_attempts||0)<=this.retryDelays.length&&(previous.next_retry_at||0)<=Date.now())this.entries.delete(key);if(this.entries.has(key)){if(priority){const task=this.queue.find(t=>t.key===key);if(task){task.priority=Number(priority)||0;this.queue.sort((a,b)=>b.priority-a.priority);}}return;}
+      this.entries.set(key,{state:'queued',version:VERSION});const task={source,d,index,key,priority:Number(priority)||0,retryAttempt:previous?.retry_attempts||0};this.queue.push(task);this.queue.sort((a,b)=>b.priority-a.priority);if(this.batchSize>1)queueMicrotask(()=>this.pump());else this.pump();
     }
-    ensureWorker(){if(this.worker)return;this.worker=this.workerFactory();this.worker.onmessage=({data})=>{if(data.phase){this.phase=data.phase;if(data.backend){this.backend=data.backend;this.fallback=data.fallback||null;}if(data.batchCars)this.actualBatchSize=data.batchCars;if(data.path)this.path=data.path;if(data.model)this.model=data.model;this.onChange();return;}const waiter=this.waiter;if(!waiter||data.id!==waiter.id)return;clearTimeout(waiter.timer);this.waiter=null;if(data.error)waiter.reject(Error(data.error));else {if(Object.prototype.hasOwnProperty.call(data,'batchError'))this.batchError=data.batchError||null;waiter.resolve(data.results||data.result);}};this.worker.onerror=e=>this.fail(Error(e.message||'Facing worker failed'));}
+    ensureWorker(){if(this.worker)return;this.worker=this.workerFactory();this.worker.onmessage=({data})=>{if(data.model_cache_update){this.onModelUpdate(data.model_cache_update);return;}if(data.phase){this.phase=data.phase;if(data.backend){this.backend=data.backend;this.fallback=data.fallback||null;}if(data.batchCars)this.actualBatchSize=data.batchCars;if(data.path)this.path=data.path;if(data.model)this.model=data.model;this.onChange();return;}const waiter=this.waiter;if(!waiter||data.id!==waiter.id)return;clearTimeout(waiter.timer);this.waiter=null;if(data.error)waiter.reject(Error(data.error));else {if(Object.prototype.hasOwnProperty.call(data,'batchError'))this.batchError=data.batchError||null;waiter.resolve(data.results||data.result);}};this.worker.onerror=e=>this.fail(Error(e.message||'Facing worker failed'));}
     fail(error){if(this.waiter){clearTimeout(this.waiter.timer);this.waiter.reject(error);this.waiter=null;}this.worker?.terminate();this.worker=null;this.phase='error';}
     infer(prepared,batchSize=this.batchSize){this.ensureWorker();const id=++this.serial,batch=Array.isArray(prepared);return new Promise((resolve,reject)=>{this.waiter={id,resolve,reject,timer:setTimeout(()=>this.fail(Error('Facing model timed out')),this.timeout)};try{this.worker.postMessage(batch?{id,jobs:prepared,batchSize}:{id,...prepared},batch?prepared.map(p=>p.input.buffer):[prepared.input.buffer]);}catch(e){this.fail(e);}});}
     record(task,prepared,result){
@@ -118,8 +118,13 @@
       this.lastReused=!!result.reused_exact_crop;this.lastBatchCount=result.batch_count||1;
       const record={...qualityGate(result,prepared),fingerprint:fingerprint(task.d),observedAt:Date.now()};this.entries.set(task.key,record);this.onResult(task.source,task.index,record);
     }
+    recordFailure(task,error){
+      const attempts=(task.retryAttempt||0)+1,delay=this.retryDelays[attempts-1],result={version:VERSION,state:'error',reason:error.message,fingerprint:fingerprint(task.d),retry_attempts:attempts,next_retry_at:delay==null?null:Date.now()+delay,retry_exhausted:delay==null};
+      this.entries.set(task.key,result);this.onResult(task.source,task.index,result);this.phase='error';
+    }
     async pump(){
       if(this.running||this.cooldown||this.isPaused()||!this.queue.length)return;
+      if(this.phase==='error'){this.worker?.terminate();this.worker=null;this.phase='idle';}
       this.running=true;const pending=[],size=this.batchError||['wasm','webgl'].includes(this.backend)?1:this.batchSize;let inferred=false,scanned=0;
       try{
         // Fill from work already queued; never delay a selected car waiting
@@ -132,7 +137,7 @@
             const prepared=await this.prepareCrop(task.source,task.d),key=prepared.visualKey?task.source.cameraId+':'+prepared.visualKey+':'+(prepared.lights?.type||'none'):null,cached=key?this.visualEntries.get(key):null;
             if(prepared.skip||cached)this.record(task,prepared,prepared.skip||{...cached,lights:prepared.lights,crop:prepared.crop,inference_ms:0,backend:'cache',reused_exact_crop:true});
             else pending.push({task,prepared});
-          }catch(error){this.entries.set(task.key,{version:VERSION,state:'error',reason:error.message,fingerprint:fingerprint(task.d)});this.phase='error';}
+          }catch(error){this.recordFailure(task,error);}
         }
         if(this.isPaused()){
           for(const {task}of pending){this.entries.set(task.key,{state:'queued',version:VERSION});this.queue.push(task);}
@@ -145,7 +150,7 @@
           if(!Array.isArray(results)||results.length!==pending.length)throw Error('Facing batch result count mismatch');
           pending.forEach(({task,prepared},i)=>this.record(task,prepared,results[i]));
         }
-      }catch(error){for(const {task}of pending)this.entries.set(task.key,{version:VERSION,state:'error',reason:error.message,fingerprint:fingerprint(task.d)});this.phase='error';}
+      }catch(error){for(const {task}of pending)this.recordFailure(task,error);}
       finally{
         this.running=false;
         while(this.entries.size>512){const key=[...this.entries].find(([,v])=>!['queued','processing'].includes(v.state))?.[0];if(!key)break;this.entries.delete(key);}

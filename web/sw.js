@@ -1,13 +1,15 @@
 /* Static app shell only. Photos/evidence live in IndexedDB; model weights use
  * the runtime's checksummed model cache. No server API stores user data. */
-const SHELL='locaintel-shell-paired-1';
-const ASSETS=['./','index.html','style.css','app.js','sources.js','motion.js','detector.js','monitor.js','smooth.js','temporal.js','orientation.js','road.js','heading.js','paired-facing.js','capture-pair.js','models/paired-facing-v1.json','orientation-worker.js','detect-worker.js','road-worker.js','inference-runtime.js','vendor/leaflet.js','vendor/leaflet.css','vendor/leaflet-heat.js','vendor/ort/ort.webgpu.min.js','vendor/ort/ort.wasm.min.js','vendor/ort/ort.webgl.min.js'];
+const SHELL='locaintel-shell-local-1';
+const ASSETS=['./','index.html','style.css','app.js','sources.js','motion.js','detector.js','monitor.js','smooth.js','temporal.js','orientation.js','road.js','heading.js','paired-facing.js','facing-cache.js','capture-pair.js','models/paired-facing-v1.json','orientation-worker.js','detect-worker.js','road-worker.js','inference-runtime.js','vendor/leaflet.js','vendor/leaflet.css','vendor/leaflet-heat.js','vendor/ort/ort.webgpu.min.js','vendor/ort/ort.wasm.min.js','vendor/ort/ort.webgl.min.js'];
 self.addEventListener('install',event=>event.waitUntil(caches.open(SHELL).then(cache=>cache.addAll(ASSETS)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil((async()=>{for(const key of await caches.keys())if(key.startsWith('locaintel-shell-')&&key!==SHELL)await caches.delete(key);await self.clients.claim();})()));
 self.addEventListener('fetch',event=>{
  const request=event.request,url=new URL(request.url);if(request.method!=='GET'||url.origin!==self.location.origin)return;
  // These weights are already stored (and verified) by ModelRuntime.bytes.
  if(/\/models\/.*\.(onnx|bin)$/.test(url.pathname)||/\/(api|frames)\//.test(url.pathname))return;
+ const relative=url.pathname.slice(new URL(self.registration.scope).pathname.length);
+ if(!ASSETS.includes(relative)&&relative!==''&&!/^data\/(latest|cameras|patterns)\.json$/.test(relative)&&!/^models\/[^/]+\.json$/.test(relative)&&!/^vendor\/ort\/[^/]+\.(wasm|mjs)$/.test(relative))return;
  event.respondWith((async()=>{
   const cache=await caches.open(SHELL),cached=await cache.match(request,{ignoreSearch:true});
   const fresh=/\/(data|models)\/.*\.json$/.test(url.pathname)||request.mode==='navigate';

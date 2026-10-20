@@ -1,24 +1,49 @@
-name: Analyze cameras and publish
+name: Verify browser cache and publish
 on:
   workflow_dispatch:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   schedule:
-    - cron: '7,27,47 * * * *'
+    - cron: '17 8 * * *'
 permissions:
   contents: read
-  pages: write
-  id-token: write
+# Serialize core model releases and deployments; do not interrupt an update.
 concurrency:
-  group: pages
+  group: pages-${{ github.event_name == 'pull_request' && github.ref || 'release' }}
   cancel-in-progress: false
 jobs:
-  analyze:
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 18
-    env:
-      HF_HOME: ${{ github.workspace }}/.cache/huggingface
-      TOKENIZERS_PARALLELISM: 'false'
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install numpy Pillow httpx opencv-python-headless
+      - run: python -m unittest discover -s tests
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm test
+      - run: npx playwright install --with-deps chromium
+      - name: Browser E2E — local facing cache, retries, offline, no uploads
+        env:
+          BROWSER_BACKEND: wasm
+        run: npm run test:browser
+      # No browser profiles, photos, traces, videos or screenshots are uploaded.
+  publish:
+    if: github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -27,33 +52,30 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: pip
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
-            .cache
-            web/frames
-            web/data
-            yolo11n.pt
-          key: cameras-${{ github.run_id }}
-          restore-keys: cameras-
-      - run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-      - run: pip install -r requirements.txt
-      - run: python -m unittest discover -s tests
-      - run: npm ci --ignore-scripts --no-audit --no-fund
-      - run: npm test
-      - run: python -m pipeline.collect --limit 72
-      - uses: actions/cache/save@v4
-        with:
-          path: |
-            .cache
-            web/frames
-            web/data
-            yolo11n.pt
-          key: cameras-${{ github.run_id }}
+      - name: Fetch public camera catalog only (no camera photos)
+        run: python -m pipeline.publish_catalog
+      - name: Stage allowlisted app, models and metadata; reject photo evidence
+        run: python scripts/stage-site.py
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: web
+          path: .cache/site
       - uses: actions/deploy-pages@v4
         id: deployment
+  deployed:
+    if: github.event_name != 'pull_request'
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - name: Verify deployed browser cache and privacy contract
+        env:
+          BROWSER_BACKEND: wasm
+          BROWSER_BASE_URL: https://shubin123.github.io/locaIntel/
+        run: npm run test:browser

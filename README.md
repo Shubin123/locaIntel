@@ -392,3 +392,45 @@ The latest local full-resolution WebGPU benchmark on the Pascal GPU measured
 15 samples, GPU command capture enabled). All eight views matched across sizes,
 with zero score/angle differences. Cold initialization took about 1.9–2.4 seconds;
 these are local measurements, not a performance guarantee for other devices.
+
+## Browser-only publishing and automatic local retries
+
+GitHub Pages publishes the app, model assets and the public camera metadata
+catalog. The workflow does **not** run the photo collector, save camera-image
+Actions caches, or publish camera frames. `pipeline.publish_catalog` downloads
+only the catalog CSV; `scripts/stage-site.py` builds an exact allowlist and rejects
+photo evidence, inline images, symlinks and unexpected assets. All camera photos
+come directly from DriveBC into the end user's browser. Browser profiles, E2E
+screenshots, videos and traces are never uploaded by CI.
+
+The browser keeps checksummed facing weights in Cache Storage and photo bytes,
+raw facing results and paired evidence in IndexedDB. A low-priority local queue
+finds missing/current-version facing jobs throughout retained history, not just
+visible feeds. Transient crop/model errors retry after 2 and 10 seconds, with
+attempts retained across reloads; exhausted jobs remain visible and the retry
+button resets them. Backfill reads only locally saved photo bytes and never
+fetches a remote replacement photo. It pauses during history review, when facing
+is disabled, and in hidden tabs. Unknown facing and quality abstentions are
+completed results, not errors to loop on.
+
+The **Core model updates** panel shows queued downloads, checksum verification,
+local saves, cache hits and failures. Web Locks serialize these cache updates
+across model workers and browser tabs; browsers without Web Locks report that
+only per-worker serialization is available. This does not serialize GPU batches.
+A cached file with the wrong checksum is removed and downloaded again, and a
+failed download cannot replace a valid cached version.
+
+On pushes and pull requests, GitHub Actions runs the real facing-model browser
+E2E using WASM on its CPU runner, plus unit and privacy tests. Deployment waits
+for those checks. A second browser E2E checks the deployed GitHub Pages code,
+catalog privacy contract, local facing persistence, two-screenshot confirmation,
+offline reload, an injected transient failure on a nonvisible retained photo,
+local automatic retry, and absence of uploads. Deterministic synthetic photo and
+detection fixtures keep CI independent of live camera availability; the facing
+model itself runs normally. Core releases/deployments are sequential. These
+checks enforce the contract on tested releases; browser quota, eviction, private
+mode and user-cleared storage can still remove local caches.
+
+The legacy `pipeline.collect` command remains a **local-only** analysis utility;
+it is not invoked or staged by the Pages publishing workflow. Older sections
+about scheduled cloud camera analysis describe that retired deployment path.

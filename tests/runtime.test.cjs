@@ -56,3 +56,12 @@ test('batch shape changes do not retain one device-loss callback per released se
  for(let i=0;i<10;i++){const s=await new m.Session(cpu).initialize();await s.release();}
  const active=await new m.Session(cpu).initialize();assert.equal(subscriptions(),1);loseGPU({message:'test loss'});await Promise.resolve();assert.match(active.lost.message,/test loss/);
 });
+
+test('core model cache updates serialize across workers, verify cached bytes and repair corruption',async()=>{
+ const crypto=require('node:crypto'),payload=Uint8Array.of(1,2,3),sha256=crypto.createHash('sha256').update(payload).digest('hex'),stored=new Map(),events=[];let chain=Promise.resolve(),active=0,peak=0,fetches=0;
+ const locks={request:(_name,fn)=>{const p=chain.then(fn);chain=p.catch(()=>{});return p;}},cache={match:async u=>stored.get(u)?.clone(),put:async(u,r)=>stored.set(u,r.clone()),delete:async u=>stored.delete(u)};
+ function worker(){const c=vm.createContext({URL,Response,Uint8Array,Promise,navigator:{locks},location:{href:'https://example.test/worker.js'},caches:{open:async()=>cache},crypto:crypto.webcrypto,postMessage:e=>events.push(e.model_cache_update),fetch:async()=>{fetches++;active++;peak=Math.max(peak,active);await new Promise(r=>setTimeout(r,3));active--;return new Response(payload);}});vm.runInContext(fs.readFileSync('web/inference-runtime.js','utf8'),c);return c.ModelRuntime;}
+ const a=worker(),b=worker();await Promise.all([a.bytes({file:'a.onnx',sha256}),b.bytes({file:'b.onnx',sha256})]);assert.equal(peak,1);assert.equal(fetches,2);
+ await b.bytes({file:'a.onnx',sha256});assert.equal(fetches,2);assert(events.some(e=>e.state==='cached'));
+ stored.set('https://example.test/a.onnx',new Response(Uint8Array.of(99)));await a.bytes({file:'a.onnx',sha256});assert.equal(fetches,3);assert(events.some(e=>e.state==='repairing_cache'));assert(events.filter(e=>e.state==='saved_locally').length===3);
+});

@@ -1,4 +1,4 @@
-importScripts('inference-runtime.js?v=gpu-batch-1','orientation.js?v=paired-1');
+importScripts('inference-runtime.js?v=gpu-batch-1','orientation.js?v=local-1');
 let ready,teacherReady,quickReady;
 async function load(){
   if(!ready)ready=(async()=>{

@@ -1,4 +1,4 @@
-importScripts('inference-runtime.js?v=gpu-batch-1','detector.js?v=spatial-1');
+importScripts('inference-runtime.js?v=gpu-batch-1','detector.js?v=local-1');
 let sessionPromise;
 async function webglSpec(name){try{const r=await fetch('models/webgl-v1.json?v=webgl-1');if(!r.ok)return null;const spec=(await r.json())[name];return spec&&{...spec,file:'models/'+spec.file};}catch(_){return null;}}
 async function session(){
