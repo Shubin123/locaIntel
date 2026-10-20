@@ -24,8 +24,11 @@ const server=http.createServer((req,res)=>{
   // Window-level fixture fetch remains deterministic after SW takes control;
   // It avoids depending on service-worker network interception behavior.
   await context.addInitScript(({fixture})=>{
-    const networkFetch=window.fetch.bind(window);
-    window.fetch=(input,init)=>{const url=new URL(typeof input==='string'?input:input.url,location.href);if(url.pathname.endsWith('/data/latest.json'))return Promise.resolve(new Response(JSON.stringify(fixture),{headers:{'content-type':'application/json'}}));return networkFetch(input,init);};
+    const networkFetch=window.fetch.bind(window),reviewingCache=localStorage.getItem('locaintel.e2e.catalog')==='1';
+    const catalog={storage_mode:'browser-only',generated:fixture.generated,catalog_size:1,errors:[],cameras:fixture.cameras.map(({id,name,caption,region,highway,lat,lon,image})=>({id,name,caption,region,highway,lat,lon,image}))};
+    // Force catalog metadata to arrive before the local archive is ready.
+    if(reviewingCache){const open=IDBFactory.prototype.open;IDBFactory.prototype.open=function(...args){const request=open.apply(this,args);Object.defineProperty(request,'onsuccess',{set(callback){request.addEventListener('success',event=>setTimeout(()=>callback.call(request,event),120));}});return request;};}
+    window.fetch=(input,init)=>{const url=new URL(typeof input==='string'?input:input.url,location.href);if(url.pathname.endsWith('/data/latest.json'))return Promise.resolve(new Response(JSON.stringify(reviewingCache?catalog:fixture),{headers:{'content-type':'application/json'}}));return networkFetch(input,init);};
   },{fixture:payload});
   await context.route('**/frames/test.png*',r=>r.fulfill({contentType:'image/png',body:png}));
   await context.route('https://www.drivebc.ca/images/238.jpg*',r=>r.fulfill({contentType:'image/png',headers:{'access-control-allow-origin':'*'},body:png}));
@@ -58,8 +61,8 @@ const server=http.createServer((req,res)=>{
   await page.locator('#draw-reference').click();await page.locator('#detail-picture').scrollIntoViewIfNeeded();const bounds=await page.locator('#detail-picture').boundingBox();
   await page.mouse.move(bounds.x+bounds.width*.2,bounds.y+bounds.height*.6);await page.mouse.down();await page.mouse.move(bounds.x+bounds.width*.7,bounds.y+bounds.height*.6,{steps:8});await page.mouse.up();
   await page.waitForFunction(()=>directionReferences.get('238')?.vectors.length===2);await page.locator('#draw-reference').click();
-  await page.waitForFunction(()=>!!navigator.serviceWorker.controller);await page.evaluate(async()=>{await navigator.serviceWorker.ready;await photoArchive.chain;});
-  await page.reload();await page.waitForFunction(()=>directionReferences.get('238')?.vectors.length===2&&data&&displayedCamera(data.cameras[0]).detections.every(d=>d.orientation?.model_ran),null,{timeout:60000});
+  await page.waitForFunction(()=>!!navigator.serviceWorker.controller);await page.evaluate(async()=>{await navigator.serviceWorker.ready;await photoArchive.chain;localStorage.setItem('locaintel.e2e.catalog','1');});
+  await page.reload();await page.waitForFunction(()=>directionReferences.get('238')?.vectors.length===2&&data&&displayedCamera(data.cameras[0]).detections.length===5&&displayedCamera(data.cameras[0]).detections.every(d=>d.orientation?.model_ran),null,{timeout:60000});
   assert.equal(await page.evaluate(async()=>{await photoArchive.chain;return Object.keys((await photoArchive.metadata()).find(r=>r.hash===data.cameras[0].hash&&r.cameraId==='238').facing.byFingerprint).length;}),5);
   // Catalog-only publication preserves locally retained analysis and photos.
   await page.evaluate(()=>{const c=data.cameras[0];apply({storage_mode:'browser-only',generated:new Date().toISOString(),catalog_size:1,errors:[],cameras:[{id:c.id,name:c.name,caption:c.caption,region:c.region,highway:c.highway,lat:c.lat,lon:c.lon,image:c.image}]},null);});
@@ -68,6 +71,7 @@ const server=http.createServer((req,res)=>{
   await page.setViewportSize({width:390,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
   await context.setOffline(true);await new Promise(resolve=>server.close(resolve));await page.reload();
   await page.waitForFunction(()=>data&&displayedCamera(data.cameras[0]).detections.filter(d=>d.orientation?.model_ran).length===5&&directionReferences.get('238')?.vectors.length===2,null,{timeout:60000});
+  await page.waitForFunction(()=>displayedCamera(data.cameras[0]).detections.filter(d=>d.orientation?.paired?.state==='confirmed').length===3,null,{timeout:30000});
   assert.equal(await page.evaluate(async()=>(await photoArchive.stats()).photos),2);assert.equal(await page.evaluate(()=>displayedCamera(data.cameras[0]).detections.filter(d=>d.orientation?.paired?.state==='confirmed').length),3);assert(!requests.some(p=>p.startsWith('/api/')));assert.deepEqual(errors,[]);
   // Missed, nonvisible archived photos retry locally even after the host stops.
   await page.evaluate(async()=>{

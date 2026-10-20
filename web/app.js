@@ -644,7 +644,7 @@ async function refresh(fromSource = false) {
     const results = await Promise.allSettled(['latest', 'patterns'].map(async name => {
       const r = await fetch(`data/${name}.json?t=${stamp}`, { cache: 'no-store' }); if (!r.ok) throw Error('HTTP ' + r.status); return r.json();
     }));
-    if (results[0].status === 'fulfilled') {localHistoryOnly=false;apply(results[0].value, results[1].status === 'fulfilled' ? results[1].value : null);}
+    if (results[0].status === 'fulfilled') {await archiveReady;localHistoryOnly=false;apply(results[0].value, results[1].status === 'fulfilled' ? results[1].value : null);}
     else { analysisError = true; if (!data) throw results[0].reason; }
     historyError = results[1].status === 'rejected';
     const sources = fromSource ? await loadVisibleSources(true) : [];
