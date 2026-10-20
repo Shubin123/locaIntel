@@ -1,6 +1,6 @@
 /* Conservative spatial evidence fusion. User arrows are references, not motion. */
 (function(root){
-  const VERSION='spatial-heading-v1',names=['right','down-right','down','down-left','left','up-left','up','up-right'];
+  const VERSION='spatial-heading-v2',names=['right','down-right','down','down-left','left','up-left','up','up-right'];
   const directions={right:[1,0],'down-right':[1,1],down:[0,1],'down-left':[-1,1],left:[-1,0],'up-left':[-1,-1],up:[0,-1],'up-right':[1,-1]};
   const fingerprint=d=>JSON.stringify([d.label,d.box]);
   const detectionSignature=ds=>JSON.stringify(ds.map(fingerprint));
@@ -63,7 +63,7 @@
   }
   function attach(c,row,reference){
     const scene={width:c._photoWidth||row?.width||640,height:c._photoHeight||row?.height||400,hash:c.hash,background:row?.temporal?.scene?.background,reference};
-    return {...c,detections:(c.detections||[]).map(d=>({...d,heading:c._archive&&row?.headings?.version===VERSION&&row.headings.byFingerprint?.[fingerprint(d)]||classify(d,scene)}))};
+    return {...c,detections:(c.detections||[]).map(d=>({...d,heading:classify(d,scene)}))};
   }
   root.SpatialHeading={VERSION,fingerprint,detectionSignature,frameDetections,mergeTemporal,facing,sanitize,stableView,nearby,classify,attach};
 })(globalThis);

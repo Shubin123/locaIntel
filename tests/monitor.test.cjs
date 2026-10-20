@@ -35,3 +35,17 @@ test('late temporal writes cannot overwrite a newer detector layout on the same 
  const m=scope(),a=new m.PhotoArchive();await a.initialize();const old={label:'car',box:[.1,.1,.2,.2]},fresh={label:'car',box:[.2,.2,.4,.4]};await a.saveFrame(camera,source('race'),{detections:[fresh]});
  await a.saveTemporal('1:race',{log:{detectionSignature:JSON.stringify([JSON.stringify([old.label,old.box])])},detections:[old]});assert.equal((await a.metadata())[0].temporal,undefined);
 });
+
+test('cached features reject late detector layouts and paired evidence stays separate from raw inference',async()=>{
+ const m=scope(),a=new m.PhotoArchive();await a.initialize();const d={label:'car',box:[.1,.1,.3,.3]},fp=JSON.stringify([d.label,d.box]),sig=JSON.stringify([fp]);
+ await a.saveFrame(camera,source('a'),{detections:[d],observedAt:Date.now()-5000});await a.saveFrame(camera,source('b'),{detections:[d]});
+ const features=hash=>({version:1,hash,detectionSignature:sig,pixelSignature:hash,width:640,height:400,detections:[{...d,appearance:Array(108).fill(.5)}],background:Array(16).fill(.5)});
+ await a.saveFeatures('1:b',{...features('b'),detectionSignature:'stale'});assert.equal((await a.metadata()).find(r=>r.hash==='b').features,undefined);
+ for(const hash of ['a','b'])await a.saveFeatures('1:'+hash,features(hash));
+ const rows=await a.metadata(),deps=rows.map(r=>({key:r.key,hash:r.hash,cameraId:r.cameraId,observedAt:r.observedAt,pixelSignature:r.features.pixelSignature,detectionSignature:sig,fingerprint:fp}));
+ await a.saveOrientation('1:b',0,{version:'raw',fingerprint:fp,state:'estimated'});
+ const paired={version:'paired-facing-v1',byFingerprint:{[fp]:{fingerprint:fp,state:'estimated',paired:{state:'confirmed',frames:deps}}}};
+ await a.savePairedFacing('1:b',paired);let row=(await a.metadata()).find(r=>r.hash==='b');assert.equal(row.pairedFacing.byFingerprint[fp].paired.frames.length,2);assert.equal(row.facing.byFingerprint[fp].version,'raw');
+ await a.configure({budgetBytes:100});row=(await a.metadata())[0];assert.equal(row.hash,'b');assert.equal(row.pairedFacing,undefined);assert.equal(row.headings,undefined);assert.equal(row.facing.byFingerprint[fp].version,'raw');
+ await a.savePairedFacing('1:b',paired);row=(await a.metadata())[0];assert.equal(Object.keys(row.pairedFacing.byFingerprint).length,0);
+});

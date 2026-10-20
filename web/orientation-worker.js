@@ -1,4 +1,4 @@
-importScripts('inference-runtime.js?v=gpu-batch-1','orientation.js?v=spatial-1');
+importScripts('inference-runtime.js?v=gpu-batch-1','orientation.js?v=paired-1');
 let ready,teacherReady,quickReady;
 async function load(){
   if(!ready)ready=(async()=>{
@@ -37,9 +37,7 @@ async function fullPredict(model,input,manifest,lights){
       if(outputs.view_logits.data.length===16)flipped={logits:Array.from(outputs.view_logits.data).slice(8),angle:outputs.angle_fraction.data[1]};
     }finally{tensor.dispose?.();single.dispose?.();if(outputs)for(const t of Object.values(outputs))t.dispose?.();}
   }else prediction=await predict(model,input);
-  let result=VehicleFacing.classify(prediction.logits,prediction.angle,manifest,lights);
-  if(result.state==='estimated')result=VehicleFacing.classify(prediction.logits,prediction.angle,manifest,lights,flipped||await predict(model,mirror(input)));
-  return result;
+  return VehicleFacing.classify(prediction.logits,prediction.angle,manifest,lights,flipped||await predict(model,mirror(input)));
 }
 async function fastPredict(model,input,manifest,lights){
   const pair=new Float32Array(input.length*2);pair.set(input);pair.set(mirror(input),input.length);

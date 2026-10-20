@@ -21,6 +21,8 @@ const historyPhotoLoads = new Map();
 const imageSizes = new Map(), cardNodes = new Map(), cardVersions = new Map(), markerNodes = new Map();
 const publishedImports = new Set(); let publishedImportRunning = false;
 const directionReferences=new Map(),headingWrites=new Map();let drawReference=false,referenceDrag=null,localHistoryOnly=false;
+let pairedModel=null,pairedModelError='';
+const pairedContexts=new Map(),pairedWrites=new Map(),pairedHistoryLoads=new Map();
 const photoArchive = new Monitoring.PhotoArchive({ onChange: archiveChanged });
 function isLive() { return timelineAt == null; }
 function viewCameras() { return isLive() ? (data?.cameras || []) : historyRows; }
@@ -36,10 +38,11 @@ function queueViewPaint() {
 }
 function cacheFailure(error) { archiveError = error?.message || String(error); $('cache-status').textContent = 'Photo history could not be saved: ' + archiveError + '. Live monitoring continues.'; $('cache-status').classList.add('cache-error'); }
 function archiveChanged(event = {}) {
-  archiveRevision++;
+  archiveRevision++;pairedContexts.clear();
   if (event.clear) archiveMetadata.clear();
   if (event.row) { archiveMetadata.set(event.row.key, event.row); scheduleTemporal(event.row);queueViewPaint(); }
   for (const key of event.removedKeys || []) archiveMetadata.delete(key);
+  if(event.clear||event.removedKeys?.length)queueViewPaint();
   if (event.reload) { photoArchive.metadata().then(rows => { archiveMetadata.clear(); for (const row of rows) archiveMetadata.set(row.key,row); updateArchiveUI(); }).catch(cacheFailure); }
   clearTimeout(archivePaintTimer); archivePaintTimer = setTimeout(updateArchiveUI, 500);
 }
@@ -49,6 +52,7 @@ async function recordSource(camera, source) {
     await archiveReady;
     const local=browserDetector.get(source.hash);
     await photoArchive.saveFrame(camera,source,source.hash===camera.hash?{observedAt:Date.parse(camera.observed),analysisMode:'published',detections:camera.detections,counts:camera.counts,analysis:camera.analysis}:local?.status==='ready'?{analysisMode:'browser',detectorVersion:local.version,detections:local.detections,counts:local.counts,analysis:{road_model:null,motion:{status:'insufficient_cadence',gap_seconds:null}}}:{});
+    if(visibleSourceCameras().some(c=>String(c.id)===String(camera.id)))pairCapture.request(camera.id,source.hash,Date.parse(source.checked));
   } catch (error) { cacheFailure(error); }
 }
 function recordDetection(source, result) {
@@ -133,7 +137,7 @@ function updateBackgroundBudget(){
   $('background-status').textContent = !isLive() ? 'History review: live fetching and queued detection paused.' : document.hidden ? 'Hidden tab: background work paused.' : `Live · automatic refresh about every ${powerProfile.refreshMs/1000} seconds.`;
   clearTimeout(autoRefreshTimer);
   if(isLive()&&!document.hidden)autoRefreshTimer=setTimeout(async()=>{if(isLive()&&!document.hidden)await refresh($('source-view').checked);updateBackgroundBudget();},powerProfile.refreshMs);
-  if(isLive()&&!document.hidden){browserDetector.wake();roadAnalyzer.wake();facingAnalyzer.wake();}
+  if(isLive()&&!document.hidden){browserDetector.wake();roadAnalyzer.wake();facingAnalyzer.wake();pairCapture.wake();}else pairCapture.pause();
 }
 function setPower(value){
   powerProfile=Monitoring.profile(value);$('power-budget').value=powerProfile.level;$('power-label').value=powerProfile.name;$('power-budget').setAttribute('aria-valuetext',powerProfile.name);
@@ -192,7 +196,7 @@ function persistRoad(source,index,result){const key=source.cameraId+':'+source.h
 // WebGL and WebGPU jobs don't compete with CPU work, so they need not serialize.
 const onGPU=backend=>backend==='webgpu'||backend==='webgl';
 const roadAnalyzer=new VehicleFacing.CropOrientation({
-  workerFactory:()=>new Worker('road-worker.js?v=spatial-1'),prepareCrop:RoadVision.prepare,delayMs:powerProfile.inferenceDelay,
+  workerFactory:()=>new Worker('road-worker.js?v=paired-1'),prepareCrop:RoadVision.prepare,delayMs:powerProfile.inferenceDelay,
   isPaused:()=>!isLive()||document.hidden||(browserDetector.running&&!onGPU(browserDetector.backend)),
   isWanted:hash=>isLive()&&visibleSourceCameras().some(c=>baseDisplayedCamera(c).hash===hash),
   onChange:queueViewPaint,onResult:persistRoad
@@ -212,14 +216,41 @@ function persistFacing(source,index,result){
 const facingAnalyzer=new VehicleFacing.CropOrientation({
   batchSize:gpuBatchSize,delayMs:powerProfile.inferenceDelay,
   isPaused:()=>!isLive()||document.hidden||!$('facing-enabled').checked||(browserDetector.running&&!onGPU(browserDetector.backend)&&!onGPU(facingAnalyzer.backend))||(roadAnalyzer.running&&!onGPU(roadAnalyzer.backend)&&!onGPU(facingAnalyzer.backend)),
-  isWanted:hash=>isLive()&&visibleSourceCameras().some(c=>baseDisplayedCamera(c).hash===hash),
+  isWanted:hash=>isLive()&&visibleSourceCameras().some(c=>{const view=baseDisplayedCamera(c),row=archiveMetadata.get(c.id+':'+view.hash);return view.hash===hash||row&&PairedFacing.rowsFor(row,[...archiveMetadata.values()]).some(r=>r.hash===hash);}),
   onChange:queueViewPaint,
   onResult:persistFacing
 });
+function pairContext(c){
+  const key=c.id+':'+c.hash,row=archiveMetadata.get(key);
+  if(!pairedContexts.has(key)){if(pairedContexts.size>=128)pairedContexts.delete(pairedContexts.keys().next().value);pairedContexts.set(key,PairedFacing.context(row,[...archiveMetadata.values()]));}
+  return pairedContexts.get(key);
+}
+function rawFacing(c,d){return PairedFacing.baseFor(archiveMetadata.get(c.id+':'+c.hash),d)||(!c._archive?facingAnalyzer.get({cameraId:String(c.id),hash:c.hash},d):null)||null;}
 function withFacing(c){
-  const saved=archiveMetadata.get(c.id+':'+c.hash)?.facing,source={cameraId:String(c.id),hash:c.hash};
-  const validVersion=v=>v===VehicleFacing.VERSION||(c._archive&&['cfv-convnext-facing-v1','cfv-facing-cascade-v2'].includes(v));
-  return {...c,detections:(c.detections||[]).map((d,i)=>{const candidate=SpatialHeading.facing({facing:saved},d,i),persisted=validVersion(candidate?.version)?candidate:null;const o=persisted||(!c._archive?facingAnalyzer.get(source,d):null)||null;return {...d,orientation:o?{...o,road_direction:RoadVision.direction(d,o)}:null};})};
+  const context=pairContext(c);
+  return {...c,detections:(c.detections||[]).map(d=>{const o=PairedFacing.combine(rawFacing(c,d),d,context,pairedModel);return {...d,orientation:o?{...o,road_direction:RoadVision.direction(d,o)}:null};})};
+}
+const pairCapture=new PairCapture({
+  isPaused:()=>!isLive()||document.hidden||!$('facing-enabled').checked||!$('source-view').checked||localHistoryOnly,
+  capture:async id=>{const camera=visibleSourceCameras().find(c=>String(c.id)===String(id));if(!camera)throw Error('Camera no longer viewed');const source=await cameraSources.load(camera,true);scheduleDetection();scheduleFacing();queueViewPaint();return source;},
+  onError:()=>{} // Normal source status reports errors; retries are bounded.
+});
+async function schedulePairedHistory(c){
+  for(const candidate of pairContext(c).candidates){
+    const row=candidate.row,needed=[...new Set(candidate.matches.values())].filter(i=>!PairedFacing.baseFor(row,row.features.detections[i]));
+    if(!needed.length||pairedHistoryLoads.has(row.key))continue;
+    pairedHistoryLoads.set(row.key,true);
+    try{const blob=await photoArchive.photo(row.hash);if(!blob||!isLive()||document.hidden)continue;const source={hash:row.hash,cameraId:String(row.cameraId),blob,width:row.features.width,height:row.features.height};for(const i of needed)facingAnalyzer.request(source,row.features.detections[i],i,200);}
+    finally{pairedHistoryLoads.delete(row.key);}
+  }
+}
+function persistPaired(c){
+  const key=c.id+':'+c.hash,row=archiveMetadata.get(key);if(!row)return;
+  const byFingerprint=Object.fromEntries(c.detections.filter(d=>d.orientation?.paired).map(d=>[VehicleFacing.fingerprint(d),{...d.orientation,road_direction:undefined}]));
+  if(!Object.keys(byFingerprint).length)return;
+  const result={version:PairedFacing.VERSION,byFingerprint},value=signature(result);
+  if(signature(row.pairedFacing)===value||pairedWrites.get(key)===value)return;pairedWrites.set(key,value);
+  archiveReady.then(()=>photoArchive.savePairedFacing(key,result)).catch(cacheFailure).finally(()=>{if(pairedWrites.get(key)===value)pairedWrites.delete(key);});
 }
 function displayedCamera(c) { const view=withFacing(withRoad(withTemporal(baseDisplayedCamera(c)))),size=imageSizes.get(view.hash);if(size){view._photoWidth=size[0];view._photoHeight=size[1];}return SpatialHeading.attach(view,archiveMetadata.get(view.id+':'+view.hash),directionReferences.get(String(view.id))); }
 function scheduleFacing(){
@@ -229,9 +260,11 @@ function scheduleFacing(){
     if(!source?.blob)continue;
     for(const [i,d]of (c.detections||[]).entries())if(vehicleLabels.includes(d.label)){
       const identity={...source,cameraId:String(c.id)},row=archiveMetadata.get(c.id+':'+c.hash);
-      if(!d.orientation||d.orientation.state==='queued')facingAnalyzer.request(identity,d,i,c.id===selectedCamera&&i===(selectedVehicle??c.detections.findIndex(d=>d.label==='car'))?1000:(c.id===selectedCamera?100:0)+(d.on_road===true?30:d.on_road===false?0:10));
-      else if(['estimated','unknown'].includes(d.orientation.state)&&row&&SpatialHeading.facing(row,d,i)?.version!==VehicleFacing.VERSION)persistFacing(identity,i,d.orientation);
+      const raw=rawFacing(c,d);
+      if(!raw||raw.state==='queued')facingAnalyzer.request(identity,d,i,c.id===selectedCamera&&i===(selectedVehicle??c.detections.findIndex(d=>d.label==='car'))?1000:(c.id===selectedCamera?100:0)+(d.on_road===true?30:d.on_road===false?0:10));
+      else if(['estimated','unknown'].includes(raw.state)&&row&&SpatialHeading.facing(row,d,i)?.version!==VehicleFacing.VERSION)persistFacing(identity,i,raw);
     }
+    persistPaired(c);schedulePairedHistory(c).catch(cacheFailure);
   }
     persistHeadingsForVisible();
   facingAnalyzer.wake();
@@ -643,6 +676,7 @@ $('clear-history').onclick=async()=>{if(!confirm('Delete saved camera photos fro
 document.addEventListener('visibilitychange',()=>{if(document.hidden)stopPlayback();updateBackgroundBudget();if(!document.hidden&&isLive()){scheduleSources();scheduleDetection();}});
 window.addEventListener('monitor-frame-commit',releaseOldPhotoURLs);
 archiveReady=photoArchive.initialize().then(async()=>{const rows=await photoArchive.metadata();for(const row of rows){archiveMetadata.set(row.key,row);scheduleTemporal(row);}for(const [id,reference]of await photoArchive.references())directionReferences.set(id,reference);for(const row of rows.filter(r=>r.analysisMode==='browser'&&r.detectorVersion===browserDetector.modelVersion&&Array.isArray(r.detections)).sort((a,b)=>b.observedAt-a.observedAt).slice(0,128))browserDetector.entries.set(row.hash,{status:'ready',hash:row.hash,version:row.detectorVersion,detections:row.detections,counts:row.counts||{},observed:new Date(row.observedAt).toISOString()});archiveRevision++;await updateArchiveUI();}).catch(cacheFailure);
+fetch('models/paired-facing-v1.json?v=paired-1').then(r=>{if(!r.ok)throw Error('Paired model unavailable');return r.json();}).then(m=>{pairedModel=PairedFacing.validateModel(m);queueViewPaint();}).catch(e=>{pairedModelError=e.message;queueViewPaint();});
 setPower(powerProfile.level);refresh(true);
 
 // Temporal work runs serially with the same device budget as inference.
@@ -655,10 +689,15 @@ async function runTemporal(){
   if(temporalRunning||!isLive()||document.hidden||!temporalPending.size)return;
   temporalRunning=true;const id=temporalPending.values().next().value;temporalPending.delete(id);
   try{
-    const rows=[...archiveMetadata.values()].filter(r=>r.cameraId===id&&SpatialHeading.frameDetections(r).length).sort((a,b)=>a.observedAt-b.observedAt).slice(-3),latest=rows.at(-1);
-    if(latest&&(signature(latest.temporal?.log?.frameHashes)!==signature(rows.map(r=>r.hash))||latest.temporal?.log?.detectionSignature!==SpatialHeading.detectionSignature(SpatialHeading.frameDetections(latest)))){const frames=[];
-      for(const row of rows){const blob=await photoArchive.photo(row.hash);if(!blob)continue;frames.push({...row,...await TemporalTraffic.features(blob,SpatialHeading.frameDetections(row))});}
-      if(frames.length){const result=TemporalTraffic.analyze(frames);result.log.detectionSignature=SpatialHeading.detectionSignature(frames.at(-1).detections);result.scene={background:frames.at(-1).background,pixelSignature:frames.at(-1).pixelSignature,width:frames.at(-1).width,height:frames.at(-1).height};await photoArchive.saveTemporal(latest.key,result);queueViewPaint();}
+    const rows=[...archiveMetadata.values()].filter(r=>String(r.cameraId)===String(id)&&SpatialHeading.frameDetections(r).length).sort((a,b)=>a.observedAt-b.observedAt).slice(-PairedFacing.MAX_FRAMES),latest=rows.at(-1),frames=[];
+    for(const row of rows){
+      let features=row.features;
+      if(!PairedFacing.validFeatures(row)){const blob=await photoArchive.photo(row.hash);if(!blob)continue;features={...await TemporalTraffic.features(blob,SpatialHeading.frameDetections(row)),version:1,hash:row.hash,detectionSignature:SpatialHeading.detectionSignature(SpatialHeading.frameDetections(row))};await photoArchive.saveFeatures(row.key,features);}
+      frames.push({...row,...features});
+    }
+    const motionFrames=frames.slice(-3);
+    if(latest&&motionFrames.at(-1)?.hash===latest.hash&&(signature(latest.temporal?.log?.frameHashes)!==signature(motionFrames.map(r=>r.hash))||latest.temporal?.log?.detectionSignature!==SpatialHeading.detectionSignature(SpatialHeading.frameDetections(latest)))){
+      const result=TemporalTraffic.analyze(motionFrames);result.log.detectionSignature=SpatialHeading.detectionSignature(motionFrames.at(-1).detections);result.scene={background:motionFrames.at(-1).background,pixelSignature:motionFrames.at(-1).pixelSignature,width:motionFrames.at(-1).width,height:motionFrames.at(-1).height};await photoArchive.saveTemporal(latest.key,result);queueViewPaint();
     }
   }catch(error){console.warn('Temporal analysis unavailable',error);}
   finally{temporalRunning=false;if(temporalPending.size)setTimeout(runTemporal,powerProfile.inferenceDelay+50);}
@@ -692,7 +731,7 @@ function renderTemporalLog(){
   const version=signature([selectedCamera,rows.map(r=>[r.hash,r.temporal.log,r.facing,r.roadScene])]);if(pane.dataset.version===version)return;pane.dataset.version=version;
   const summary=node('summary',`Saved motion evidence · ${rows.length} observations`),explain=node('p','Three-frame appearance matching with a stable-background gate. Blue means persistent position across distinct images; it does not prove the same vehicle stayed continuously. Green vectors require two consistent steps ≤15 seconds apart. Longer gaps retain occupancy and turnover evidence; individual movement remains unresolved.');
   const list=node('ol');for(const row of rows.slice(-20).reverse()){const l=row.temporal.log;list.append(node('li',`${new Date(row.observedAt).toLocaleString()} · ${l.status.replaceAll('_',' ')} · ${l.states.moving} moving / ${l.states.stationary} persistent position / ${l.states.unknown} unresolved${l.turnover?` · ${l.turnover.arrivals} unmatched arrivals / ${l.turnover.departures} unmatched departures`:''}`));}
-  if(motionDownloadURL)URL.revokeObjectURL(motionDownloadURL);motionDownloadURL=URL.createObjectURL(new Blob([JSON.stringify(rows.map(r=>({cameraId:r.cameraId,hash:r.hash,...r.temporal,facing:r.facing||null,road:r.roadScene||null,headings:r.headings||null,directionReferences:directionReferences.get(r.cameraId)||null})),null,2)],{type:'application/json'}));const download=node('a','Download camera motion log (JSON)');download.href=motionDownloadURL;download.download=`camera-${selectedCamera}-motion.json`;pane.replaceChildren(summary,explain,list,download);
+  if(motionDownloadURL)URL.revokeObjectURL(motionDownloadURL);motionDownloadURL=URL.createObjectURL(new Blob([JSON.stringify(rows.map(r=>({cameraId:r.cameraId,hash:r.hash,...r.temporal,facing:r.facing||null,pairedFacing:r.pairedFacing||null,features:r.features||null,road:r.roadScene||null,headings:r.headings||null,directionReferences:directionReferences.get(r.cameraId)||null})),null,2)],{type:'application/json'}));const download=node('a','Download camera motion log (JSON)');download.href=motionDownloadURL;download.download=`camera-${selectedCamera}-motion.json`;pane.replaceChildren(summary,explain,list,download);
 }
 
 try{$('facing-enabled').checked=localStorage.getItem('locaintel.facing')!=='off';}catch(_){}
@@ -702,7 +741,7 @@ function renderFacingStatus(snapshots){
   const ds=snapshots.flatMap(vehicles).filter(d=>d.label==='car'),totals={toward_camera:0,away_from_camera:0,side:0,unresolved:0};let completed=0;
   for(const d of ds){if(d.orientation&&!['queued','processing'].includes(d.orientation.state))completed++;if(d.orientation?.state!=='estimated'){totals.unresolved++;continue;}if(d.orientation.facing==='toward_camera'||d.orientation.facing==='away_from_camera')totals[d.orientation.facing]++;else totals.side++;}
   SmoothUI.list($('facing-totals'),Object.entries(totals).map(([key,n])=>{const cell=node('div');cell.dataset.key=key;cell.append(node('strong',String(n)),node('span',{toward_camera:'FACING CAMERA',away_from_camera:'FACING AWAY',side:'SIDE VIEW',unresolved:'UNRESOLVED / WAITING'}[key]));return cell;}));
-  $('facing-status').textContent=!isLive()?'Saved facing estimates at the timeline cursor; no new crop inference.':!$('facing-enabled').checked?'New facing inference paused; saved estimates remain visible.':facingAnalyzer.phase==='loading'?'Loading the cached vehicle-view model (GPU where available); YOLO boxes stay visible.':facingAnalyzer.phase==='error'?'Facing model unavailable. Refresh retries failed crops; vehicle boxes and cached history remain available.':`${ds.filter(d=>d.orientation?.road_direction?.state==='estimated').length} road-aligned directions · ${completed}/${ds.length} car boxes have facing results · ${ds.filter(d=>d.orientation?.model_ran).length} evaluated by the model · ${ds.filter(d=>d.orientation?.quality_abstention).length} low-quality abstentions · ${ds.filter(d=>d.orientation?.state==='error').length} errors · ${facingAnalyzer.queue.length} queued${facingAnalyzer.backend==='webgl'?' · GPU / WebGL':facingAnalyzer.backend==='webgpu'?' · GPU / WebGPU':facingAnalyzer.backend==='wasm'?' · CPU fallback / WASM':''}${facingAnalyzer.path==='fast-verified'?' · fast verified':facingAnalyzer.path==='full-resolution'?' · full-resolution check':''}${facingAnalyzer.backend==='wasm'&&facingAnalyzer.fallback?' · '+facingAnalyzer.fallback:''}${Number.isFinite(facingAnalyzer.lastInferenceMs)?' · '+(facingAnalyzer.lastReused?'exact crop reused':facingAnalyzer.lastInferenceMs+' ms / crop'):''}${facingAnalyzer.actualBatchSize>1?' · GPU batch capacity '+facingAnalyzer.actualBatchSize+' cars':''}${facingAnalyzer.lastBatchCount>1?' · '+facingAnalyzer.lastBatchCount+' cars / last batch':''}${facingAnalyzer.batchError?' · batch fallback: '+facingAnalyzer.batchError:''}${facingAnalyzer.running?' · analyzing crops':''}. Every valid car box on viewed feeds runs through facing inference. Tiny and clipped crops retain diagnostics but abstain from direction estimates. Other vehicle classes are unsupported. Scores are not calibrated probabilities.`;
+  $('facing-status').textContent=!isLive()?'Saved facing estimates at the timeline cursor; no new crop inference.':!$('facing-enabled').checked?'New facing inference paused; saved estimates remain visible.':facingAnalyzer.phase==='loading'?'Loading the cached vehicle-view model (GPU where available); YOLO boxes stay visible.':facingAnalyzer.phase==='error'?'Facing model unavailable. Refresh retries failed crops; vehicle boxes and cached history remain available.':`${ds.filter(d=>d.orientation?.paired?.state==='confirmed').length} confirmed across 2+ screenshots · ${ds.filter(d=>d.orientation?.paired?.state==='pending').length} awaiting another matched screenshot${pairedModelError?' · '+pairedModelError:''} · ${ds.filter(d=>d.orientation?.road_direction?.state==='estimated').length} road-aligned directions · ${completed}/${ds.length} car boxes have facing results · ${ds.filter(d=>d.orientation?.model_ran).length} evaluated by the model · ${ds.filter(d=>d.orientation?.quality_abstention).length} low-quality abstentions · ${ds.filter(d=>d.orientation?.state==='error').length} errors · ${facingAnalyzer.queue.length} queued${facingAnalyzer.backend==='webgl'?' · GPU / WebGL':facingAnalyzer.backend==='webgpu'?' · GPU / WebGPU':facingAnalyzer.backend==='wasm'?' · CPU fallback / WASM':''}${facingAnalyzer.path==='fast-verified'?' · fast verified':facingAnalyzer.path==='full-resolution'?' · full-resolution check':''}${facingAnalyzer.backend==='wasm'&&facingAnalyzer.fallback?' · '+facingAnalyzer.fallback:''}${Number.isFinite(facingAnalyzer.lastInferenceMs)?' · '+(facingAnalyzer.lastReused?'exact crop reused':facingAnalyzer.lastInferenceMs+' ms / crop'):''}${facingAnalyzer.actualBatchSize>1?' · GPU batch capacity '+facingAnalyzer.actualBatchSize+' cars':''}${facingAnalyzer.lastBatchCount>1?' · '+facingAnalyzer.lastBatchCount+' cars / last batch':''}${facingAnalyzer.batchError?' · batch fallback: '+facingAnalyzer.batchError:''}${facingAnalyzer.running?' · analyzing crops':''}. Every valid car box on viewed feeds runs through facing inference. Facing confirmation requires two distinct same-camera screenshots within 15 seconds; up to five cached screenshots check consistency. One follow-up fetch after 5 seconds is retried once if unchanged. Repeated upstream images and unmatched vehicles stay unresolved. Tiny and clipped crops retain diagnostics but abstain from direction estimates. Other vehicle classes are unsupported. Scores are not calibrated probabilities.`;
   notifyPane('facing','Vehicle facing',[totals,completed,facingAnalyzer.phase,facingAnalyzer.backend,facingAnalyzer.path,facingAnalyzer.lastInferenceMs,isLive(),$('facing-enabled').checked],$('facing-updated'),$('facing-pane'));
 }
 function renderFacingLayer(picture,c,detail,focused){
@@ -724,6 +763,7 @@ function renderFacingInspector(c){
   if(pane.dataset.cropKey===key)return;pane.dataset.cropKey=key;
   const canvas=node('canvas');canvas.width=224;canvas.height=224;canvas.setAttribute('role','img');canvas.setAttribute('aria-label',`Isolated vehicle #${index+1}`);
   const details=node('div'),o=d.orientation;details.append(node('h3',`Isolated vehicle #${index+1} · ${d.label}`),node('p',VehicleFacing.description(o),'facing-caption'));
+  if(o?.paired)details.append(node('p',o.paired.state==='confirmed'?`${o.paired.count} distinct cached screenshots agree · ${o.paired.frameHashes.map(h=>h.slice(0,8)).join(' / ')}`:`Awaiting confirmed second screenshot · ${o.reason?.replaceAll('_',' ')}`,'widget-note'));
   const lightText={headlight_pair:'Paired bright white/yellow pixels: possible headlights.',taillight_pair:'Paired red pixels: possible taillights.',ambiguous:'Both lamp colors present; lamp evidence is ambiguous.',none:'No reliable paired-lamp cue.'}[o?.lights?.type]||'Lamp evidence pending.';
   details.append(node('p',d.road_axis?'Local road axis available · '+(o?.road_direction?.state==='estimated'?'road-aligned estimated direction: '+o.road_direction.direction:o?.road_direction?.reason==='facing_road_axis_disagree'?'axis and facing disagree; direction unresolved':'waiting for consistent facing to choose its direction'):d.on_road===false?'Road model does not support this car footprint.':'Road-axis evidence is unavailable or ambiguous here.','widget-note'),node('p',lightText,'widget-note'),node('p',o?.model?`${o.view?.replaceAll('_',' ')} · model group score ${o.score?.toFixed(2)} (uncalibrated)${Number.isFinite(o.mirror_error_degrees)?' · mirror error '+Math.round(o.mirror_error_degrees)+'°':''} · ${o.crop?.width||'?'}×${o.crop?.height||'?'} source pixels`:'Car crops are evaluated by the pretrained eight-view model when enough source pixels are available.','widget-note'),node('p','This is an appearance estimate. Movement and stationary evidence stay separate.','widget-note'));
   if(o?.model)details.append(node('p',`${o.model}${o.backend==='webgl'?' · GPU / WebGL':o.backend==='webgpu'?' · GPU / WebGPU':o.backend==='wasm'?' · CPU fallback / WASM':''}${o.path==='fast-verified'?' · batched mirror verified':o.path==='full-resolution'?' · full-resolution check':''}${Number.isFinite(o.inference_ms)?' · '+o.inference_ms+' ms':''}${o.backend==='wasm'&&o.fallback?' · '+o.fallback:''}`,'widget-note'));

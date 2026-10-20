@@ -1,6 +1,6 @@
 /* Vehicle facing from isolated crops. These estimates never set motion.state. */
 (function(root){
-  const VERSION='cfv-facing-cascade-v3',SIZE=224,supported=new Set(['car']);
+  const VERSION='cfv-facing-cascade-v4',SIZE=224,supported=new Set(['car']);
   const fingerprint=d=>JSON.stringify([d.label,d.box]);
   function lampPairs(rgba,width,height){
     const find=kind=>{
@@ -35,14 +35,15 @@
   function classify(logits,angle,manifest,lights={type:'none'},mirrored=null){
     const p=decode(logits,angle),lightView=lights.type==='headlight_pair'?'front':lights.type==='taillight_pair'?'rear':null;
     const result={version:VERSION,model:manifest.model,state:'unknown',facing:'unknown',view:manifest.views[p.index],score:p.score,margin:p.margin,view_scores:p.probabilities,angle_degrees:p.angle,angle_convention:manifest.angle_convention,lights,method:'cfv_supervised_view_and_angle_plus_lamp_evidence',measured_motion:false};
+    if(mirrored){
+      const flip=decode(mirrored.logits,mirrored.angle),error=circularError(flip.angle,(360-p.angle)%360);
+      result.mirror_view_scores=flip.probabilities;result.mirror_angle_degrees=flip.angle;
+      result.mirror_error_degrees=error;result.mirror_consistent=flip.group===p.group&&flip.score>=.6&&error<=45;
+    }
     if(p.score<.68||p.margin<.3){result.reason='ambiguous_model_scores';return result;}
     if(circularError(p.angle,p.index*45)>67.5){result.reason='angle_view_disagreement';return result;}
     if(lightView&&lightView!==p.group&&p.group!=='side'){result.reason='lamp_model_disagreement';return result;}
-    if(mirrored){
-      const flip=decode(mirrored.logits,mirrored.angle),error=circularError(flip.angle,(360-p.angle)%360);
-      result.mirror_error_degrees=error;result.mirror_consistent=flip.group===p.group&&flip.score>=.6&&error<=45;
-      if(!result.mirror_consistent){result.reason='mirror_disagreement';return result;}
-    }
+    if(mirrored&&!result.mirror_consistent){result.reason='mirror_disagreement';return result;}
     result.state='estimated';result.reason=lightView===p.group?'model_and_light_pair_agree':'trained_crop_appearance';
     result.facing=p.group==='front'?'toward_camera':p.group==='rear'?'away_from_camera':'side_view';
     if(result.mirror_consistent&&p.probabilities[p.index]>=.65){result.image_direction=['down','down-right','right','up-right','up','up-left','left','down-left'][p.index];result.facing_glyph=['↓','↘','→','↗','↑','↖','←','↙'][p.index];if(p.group==='side')result.facing=p.index===2?'image_right':'image_left';}
@@ -98,7 +99,7 @@
     return prepared.quality?{...base,state:'unknown',facing:'unknown',reason:prepared.quality,image_direction:undefined,facing_glyph:undefined,quality_abstention:true}:base;
   }
   class CropOrientation{
-    constructor({workerFactory=()=>new Worker('orientation-worker.js?v=spatial-1'),prepareCrop=createPreparer(),onChange=()=>{},onResult=()=>{},isPaused=()=>false,isWanted=()=>true,delayMs=350,timeout=90000,batchSize=1}={}){
+    constructor({workerFactory=()=>new Worker('orientation-worker.js?v=paired-1'),prepareCrop=createPreparer(),onChange=()=>{},onResult=()=>{},isPaused=()=>false,isWanted=()=>true,delayMs=350,timeout=90000,batchSize=1}={}){
       Object.assign(this,{workerFactory,prepareCrop,onChange,onResult,isPaused,isWanted,delayMs,timeout});this.batchSize=[1,2,4,8].includes(Number(batchSize))?Number(batchSize):1;this.version=VERSION;this.entries=new Map();this.visualEntries=new Map();this.queue=[];this.running=false;this.worker=null;this.serial=0;this.waiter=null;this.cooldown=null;this.phase='idle';
     }
     key(source,d){return source.cameraId+':'+source.hash+':'+fingerprint(d);}

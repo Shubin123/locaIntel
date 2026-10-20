@@ -329,3 +329,66 @@ persistent annotations, a narrow viewport, and an offline reload **after stoppin
 the fixture's static host**. The fixture is synthetic; numerical model fidelity
 is separately checked against the real crops above. Spatial fusion does not
 have a labeled DriveBC accuracy benchmark.
+
+## Facing across cached screenshots
+
+Facing confirmation now requires **at least two distinct screenshots from the
+same camera**, observed no more than 15 seconds apart. Every valid YOLO car crop
+still runs through the GPU cascade, including tiny/clipped crops that retain
+raw diagnostics but abstain. Crop-plus-mirror verification and two-screenshot
+confirmation are separate checks. Up to five cached screenshots check agreement;
+ambiguous associations, changed views, duplicate decoded pixels, missing evidence
+and conflicting facing predictions leave direction unresolved. This is
+appearance association, not a guaranteed vehicle identity or measured movement.
+
+While viewing live source images with facing enabled, a bounded scheduler requests
+a follow-up after five seconds and retries once if the upstream photo is unchanged
+or unavailable. Sparse upstream images may never provide a valid pair. History
+review and hidden tabs pause scheduled work. Observation timestamps do not establish
+camera capture times. The browser retains appearance features, raw model evidence,
+and separate paired results in IndexedDB. Pruning a supporting frame invalidates
+its derived confirmation. Offline reopening reuses local evidence without a
+storage server; retention limits and browser eviction still apply.
+
+The paired residual head was actually trained on 2,050 labeled CFV pair conditions
+(1,025 distinct pairs evaluated clean and at 40 pixels), using 4,080 distinct
+crop-condition inputs through the production WebGPU cascade. Train/validation/test
+identities are disjoint: 42/10/14. These are nearby labeled views of the same car,
+**not verified same-camera temporal traffic sequences**. No browser predictions
+are used as training labels. More unlabeled cache improves consistency checks;
+it does not demonstrate continual supervised accuracy improvement.
+
+Held-out eight-view results (224 examples per condition):
+
+| Input | Latest frame | Mean of two | Learned raw head | Shipping confirmation |
+| --- | ---: | ---: | ---: | --- |
+| Clean | 97.77% | 98.66% | 98.66% | 215 accepted, 1 wrong (95.98% coverage) |
+| 40px | 94.64% | 95.98% | 96.43% | 180 accepted, 0 wrong (80.36% coverage) |
+
+The shipping gate preserves the latest verified class and matches the simpler
+verified-two-frame baseline on validation/test. It establishes **no additional
+production accuracy gain from the learned gate**. Class boundaries are
+underrepresented; the two degradation conditions are correlated. The official
+test identities were previously evaluated for the upstream cascade. DriveBC
+sequence accuracy remains unmeasured. An independently supervising agent reproduced
+the shipped JavaScript predictions and reviewed cache/association failure cases.
+Full provenance, selection policy, coverage and limitations are in
+[paired-facing-training-v1.json](web/models/paired-facing-training-v1.json).
+
+Reproduce after obtaining the pinned CFV `train.zip` and `test.zip` archives in
+`.cache/cfv-data` (revision and required checksums are enforced by preparation):
+
+```sh
+.venv/bin/python -m pipeline.prepare_paired_facing
+GPU_BENCH_CHROME=/path/to/chrome node scripts/extract-paired-facing.cjs
+.venv/bin/python -m pipeline.train_paired_facing
+npm test
+GPU_BENCH_CHROME=/path/to/chrome npm run test:browser
+GPU_BENCH_CHROME=/path/to/chrome npm run benchmark:gpu
+```
+
+The latest local full-resolution WebGPU benchmark on the Pascal GPU measured
+34.60 cars/s at batch 1 and 43.15 cars/s at batch 8 (warm synthetic crops,
+15 samples, GPU command capture enabled). All eight views matched across sizes,
+with zero score/angle differences. Cold initialization took about 1.9–2.4 seconds;
+these are local measurements, not a performance guarantee for other devices.

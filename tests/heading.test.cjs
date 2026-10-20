@@ -30,3 +30,8 @@ test('persisted orientation lookup follows exact fingerprints across detection r
 test('invalid coordinates and excessive spatial references are rejected',()=>{
  assert.throws(()=>h.sanitize([{start:[NaN,0],end:[1,1]}]));assert.throws(()=>h.sanitize([{start:[0,0],end:[0,0]}]));assert.throws(()=>h.sanitize(Array(65).fill({start:[0,0],end:[1,1]})));
 });
+
+test('historical headings cannot reuse a stale estimate after paired evidence becomes unresolved',()=>{
+ const d={...car,orientation:{state:'unknown',paired:{state:'pending'}}},fp=h.fingerprint(d),row={headings:{version:h.VERSION,byFingerprint:{[fp]:{state:'estimated',direction:'right'}}}};
+ const c=h.attach({_archive:true,hash:'a',detections:[d]},row,null);assert.equal(c.detections[0].heading.state,'unknown');assert.equal(c.detections[0].heading.direction,undefined);
+});

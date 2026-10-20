@@ -25,6 +25,22 @@ const server=http.createServer((req,res)=>{
   await page.waitForFunction(()=>{if(!data)return false;const c=displayedCamera(data.cameras[0]);return c.detections.length===5&&c.detections.every(d=>d.orientation?.model_ran)&&!facingAnalyzer.running;},null,{timeout:90000});
   let coverage=await page.evaluate(()=>{const c=displayedCamera(data.cameras[0]);return {cars:c.detections.length,ran:c.detections.filter(d=>d.orientation.model_ran).length,abstained:c.detections.filter(d=>d.orientation.quality_abstention).length,backend:facingAnalyzer.backend};});
   assert.equal(coverage.ran,5);assert.equal(coverage.abstained,2);assert.equal(coverage.backend,'webgpu');console.log('Facing coverage:',coverage);
+  assert.equal(await page.evaluate(()=>displayedCamera(data.cameras[0]).detections.filter(d=>d.orientation.state==='estimated').length),0,'a single screenshot never confirms facing');
+  // Controlled confidence fixture tests temporal plumbing, not model accuracy.
+  // Per-frame GPU coverage above uses the real production model.
+  await page.evaluate(async()=>{
+    pairCapture.pause();await photoArchive.chain;
+    const camera=data.cameras[0],current=archiveMetadata.get(camera.id+':'+camera.hash),blob=await photoArchive.photo(camera.hash),bitmap=await createImageBitmap(blob),canvas=document.createElement('canvas');canvas.width=bitmap.width;canvas.height=bitmap.height;
+    const g=canvas.getContext('2d');g.drawImage(bitmap,0,0);bitmap.close();g.fillStyle='#818181';g.fillRect(10,10,15,15);
+    const previousBlob=await new Promise(r=>canvas.toBlob(r,'image/png')),previousHash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await previousBlob.arrayBuffer())),v=>v.toString(16).padStart(2,'0')).join('');
+    await photoArchive.saveFrame(camera,{hash:previousHash,blob:previousBlob,width:640,height:400},{observedAt:current.observedAt-5000,analysisMode:'published',detections:camera.detections,counts:camera.counts,analysis:{}});
+    const manifest=await (await fetch('models/vehicle-facing-v1.json')).json(),logits=Array.from({length:8},(_,i)=>i===0?8:-5);
+    for(const hash of [previousHash,camera.hash])for(let i=0;i<3;i++)await photoArchive.saveOrientation(camera.id+':'+hash,i,{...VehicleFacing.classify(logits,0,manifest,{type:'none'},{logits,angle:0}),fingerprint:VehicleFacing.fingerprint(camera.detections[i]),model_ran:true,backend:'webgpu',fixture:true});
+    scheduleTemporal(current);queueViewPaint();
+  });
+  await page.waitForFunction(()=>displayedCamera(data.cameras[0]).detections.slice(0,3).every(d=>d.orientation?.paired?.state==='confirmed'),null,{timeout:30000});
+  assert.equal(await page.evaluate(()=>displayedCamera(data.cameras[0]).detections.filter(d=>d.orientation?.paired?.state==='confirmed').length),3);
+  await page.waitForFunction(()=>archiveMetadata.get(data.cameras[0].id+':'+data.cameras[0].hash)?.pairedFacing?.byFingerprint?.[VehicleFacing.fingerprint(data.cameras[0].detections[0])]?.paired?.state==='confirmed');
   await page.evaluate(async()=>{const c=data.cameras[0];await photoArchive.saveTemporal(c.id+':'+c.hash,{detections:[{label:'car',box:[.8,.8,.9,.9],motion:{state:'moving',vector:[.01,0],gap_seconds:1}}],log:{frameHashes:[c.hash],states:{moving:1,stationary:0,unknown:0},status:'test_stale'}});});
   assert.equal(await page.evaluate(()=>displayedCamera(data.cameras[0]).detections.length),5);
   await page.locator('.heading-controls summary').click();
@@ -38,7 +54,7 @@ const server=http.createServer((req,res)=>{
   await page.setViewportSize({width:390,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
   await context.setOffline(true);await new Promise(resolve=>server.close(resolve));await page.reload();
   await page.waitForFunction(()=>data&&displayedCamera(data.cameras[0]).detections.filter(d=>d.orientation?.model_ran).length===5&&directionReferences.get('238')?.vectors.length===2,null,{timeout:60000});
-  assert.equal(await page.evaluate(async()=>(await photoArchive.stats()).photos),1);assert(!requests.some(p=>p.startsWith('/api/')));assert.deepEqual(errors,[]);
-  console.log('Exact YOLO boxes, 5/5 model runs, quality abstentions, reference editing/reload, mobile layout, and offline reload with host stopped: passed.');
+  assert.equal(await page.evaluate(async()=>(await photoArchive.stats()).photos),2);assert.equal(await page.evaluate(()=>displayedCamera(data.cameras[0]).detections.filter(d=>d.orientation?.paired?.state==='confirmed').length),3);assert(!requests.some(p=>p.startsWith('/api/')));assert.deepEqual(errors,[]);
+  console.log('Exact YOLO boxes, 5/5 model runs, quality abstentions, two-screenshot confirmation, reference editing/reload, mobile layout, and paired offline reload with host stopped: passed.');
  }finally{await browser?.close();if(server.listening)await new Promise(r=>server.close(r));}
 })().catch(error=>{console.error(error);process.exitCode=1;});

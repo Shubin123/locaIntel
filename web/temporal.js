@@ -4,12 +4,13 @@
   const center=d=>[(d.box[0]+d.box[2])/2,(d.box[1]+d.box[3])/2];
   const distance=(a,b)=>Math.hypot(...a.map((v,i)=>v-b[i]));
   const difference=(a,b)=>{const pairs=a.map((v,i)=>[v,b[i]]).filter(p=>p.every(Number.isFinite));return pairs.length<a.length*.4?1:pairs.reduce((s,p)=>s+Math.abs(p[0]-p[1]),0)/pairs.length;};
+  const valid=d=>Array.isArray(d.box)&&d.box.length===4&&d.box.every(v=>Number.isFinite(v)&&v>=0&&v<=1)&&d.box[2]>d.box[0]&&d.box[3]>d.box[1]&&Array.isArray(d.appearance)&&d.appearance.length>=108&&d.appearance.every(Number.isFinite);
   function matches(a,b){
     const result=new Map(),used=new Set();
     for(let j=0;j<b.detections.length;j++){
-      const d=b.detections[j];if(!labels.has(d.label))continue;
-      const candidates=a.detections.map((p,i)=>({i,p,error:p.label===d.label&&p.appearance&&d.appearance?difference(p.appearance,d.appearance):1})).filter(x=>x.error<.065&&distance(center(x.p),center(d))<.12&&Math.abs(Math.log(((x.p.box[2]-x.p.box[0])*(x.p.box[3]-x.p.box[1]))/((d.box[2]-d.box[0])*(d.box[3]-d.box[1]))))<.55).sort((x,y)=>x.error-y.error);
-      if(candidates.length&&(!candidates[1]||candidates[1].error-candidates[0].error>.025)&&!b.detections.some((other,k)=>k!==j&&other.label===d.label&&other.appearance&&distance(center(candidates[0].p),center(other))<.12&&difference(candidates[0].p.appearance,other.appearance)<=candidates[0].error+.025)&&!used.has(candidates[0].i)){result.set(j,candidates[0].i);used.add(candidates[0].i);}
+      const d=b.detections[j];if(!labels.has(d.label)||!valid(d))continue;
+      const candidates=a.detections.map((p,i)=>({i,p,error:p.label===d.label&&valid(p)&&p.appearance.length===d.appearance.length?difference(p.appearance,d.appearance):1})).filter(x=>x.error<.065&&distance(center(x.p),center(d))<.12&&Math.abs(Math.log(((x.p.box[2]-x.p.box[0])*(x.p.box[3]-x.p.box[1]))/((d.box[2]-d.box[0])*(d.box[3]-d.box[1]))))<.55).sort((x,y)=>x.error-y.error);
+      if(candidates.length&&(!candidates[1]||candidates[1].error-candidates[0].error>.025)&&!b.detections.some((other,k)=>k!==j&&other.label===d.label&&valid(other)&&other.appearance.length===d.appearance.length&&distance(center(candidates[0].p),center(other))<.12&&difference(candidates[0].p.appearance,other.appearance)<=candidates[0].error+.025)&&!used.has(candidates[0].i)){result.set(j,candidates[0].i);used.add(candidates[0].i);}
     }return result;
   }
   function analyze(frames){

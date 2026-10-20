@@ -91,6 +91,27 @@
       if(row){row.roadScene=result;store.put(row);}await done;if(row)this.onChange({row,removedKeys:[]});return row;
     });}
 
+    saveFeatures(key,features){return this.enqueue(async()=>{
+      const db=await this.open(),tx=db.transaction('frames','readwrite'),done=complete(tx),store=tx.objectStore('frames'),row=await request(store.get(key));
+      const expected=row&&JSON.stringify((row.browserResult?.detections||row.detections||[]).map(d=>JSON.stringify([d.label,d.box])));
+      if(row&&features.hash===row.hash&&features.detectionSignature===expected){row.features=features;row.width=features.width;row.height=features.height;store.put(row);}
+      await done;if(row)this.onChange({row,removedKeys:[]});return row;
+    });}
+    savePairedFacing(key,result){return this.enqueue(async()=>{
+      const db=await this.open(),tx=db.transaction('frames','readwrite'),done=complete(tx),store=tx.objectStore('frames'),row=await request(store.get(key));
+      if(row){
+        const valid=new Set([...(row.detections||[]),...(row.browserResult?.detections||[])].map(d=>JSON.stringify([d.label,d.box]))),byFingerprint={};
+        for(const [fp,record]of Object.entries(result.byFingerprint||{})){
+          if(!valid.has(fp)||record.fingerprint!==fp)continue;
+          let current=true;
+          for(const frame of record.paired?.frames||[]){const dependency=await request(store.get(frame.key));if(!dependency||String(dependency.cameraId)!==String(row.cameraId)||dependency.hash!==frame.hash||dependency.observedAt!==frame.observedAt||dependency.features?.pixelSignature!==frame.pixelSignature||dependency.features?.detectionSignature!==frame.detectionSignature){current=false;break;}}
+          if(current)byFingerprint[fp]=record;
+        }
+        row.pairedFacing={...result,byFingerprint};delete row.headings;store.put(row);
+      }
+      await done;if(row)this.onChange({row,removedKeys:[]});return row;
+    });}
+
     saveHeadings(key,headings){return this.enqueue(async()=>{
       const db=await this.open(),tx=db.transaction('frames','readwrite'),done=complete(tx),store=tx.objectStore('frames'),row=await request(store.get(key));
       if(row){const valid=new Set([...(row.detections||[]),...(row.browserResult?.detections||[])].map(d=>JSON.stringify([d.label,d.box])));row.headings={...headings,byFingerprint:Object.fromEntries(Object.entries(headings.byFingerprint).filter(([key])=>valid.has(key)))};store.put(row);}
@@ -115,6 +136,8 @@
         frames.delete(row.key);removedKeys.push(row.key);removed++;refs.set(row.hash,refs.get(row.hash)-1);
         if(!refs.get(row.hash)){photos.delete(row.hash);used-=sizes.get(row.hash)||0;}
       }
+      const removedSet=new Set(removedKeys);
+      for(const row of rows)if(!removedSet.has(row.key)&&row.pairedFacing&&Object.values(row.pairedFacing.byFingerprint||{}).some(r=>(r.paired?.frames||[]).some(f=>removedSet.has(f.key)))){delete row.pairedFacing;delete row.headings;frames.put(row);}
       // A photo whose sole frame was removed by a previous interrupted write is not retained.
       for(const p of allPhotos)if(!refs.has(p.hash)){photos.delete(p.hash);used-=p.size;}
       await done;this.cachedBytes=Math.max(0,used);this.lastPrune=Date.now();return {removedKeys,usedBytes:Math.max(0,used),frames:rows.length-removed,photos:[...refs.values()].filter(n=>n>0).length,budgetBytes:this.budgetBytes,retentionMs:this.retentionMs};
