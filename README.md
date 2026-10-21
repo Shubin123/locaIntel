@@ -1,33 +1,49 @@
 # LocaIntel
 
-Public DriveBC camera observatory with cached snapshots and YOLO11 object detection.
+DriveBC camera observatory with browser-local photos, YOLO11 detection and GPU facing inference.
 
 ## Run locally
 
-Python 3.11+ recommended.
+Python 3.11+ recommended. Publish camera metadata, then serve the static app:
+
+```sh
+python -m pipeline.publish_catalog
+python -m http.server 8000 --bind 127.0.0.1 --directory web
+```
+
+Open http://localhost:8000. This server delivers app/model assets and metadata;
+your browser fetches photos directly from DriveBC and retains photos and results
+locally. The pretrained models are not trained specifically on BC roads.
+
+## GitHub Pages
+
+The workflow publishes only allowlisted app/model assets and public camera
+metadata. It runs unit/privacy checks and browser E2E before deployment, then
+verifies the deployed site. It runs on pushes, pull requests, manually and daily;
+releases are serialized. Camera photos and browser data are never uploaded or
+cached by the workflow. Old remote photo caches/artifacts have been removed.
+
+Visible source images load directly from DriveBC under the device budget. Browser
+YOLO, road and facing models process them locally; matching results and photos
+persist in IndexedDB. Observation times are not guaranteed capture times. Counts
+describe visible objects, not unique vehicles, traffic volume, speed or safety.
+
+## Optional local Python analysis
+
+The older Python collector/video server is available for local research only:
 
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python -m pipeline.collect --limit 72
-uvicorn pipeline.server:app --host 0.0.0.0 --port 8000
+uvicorn pipeline.server:app --host 127.0.0.1 --port 8000
 ```
 
-Open http://localhost:8000. The single-worker service polls a rotating selection of 48 cameras every 120 seconds. Configure `CAMERA_LIMIT` and `POLL_SECONDS` via environment variables. GPU inference follows Ultralytics defaults; a CPU also works. We use pretrained YOLO11 nano, not a model trained specifically on BC roads.
-
-- `/api/events`: SSE JSON updates and heartbeats.
-- `/api/cameras/864/stream`: multipart JPEG stream of cached snapshots.
-- `/data/latest.json`: latest analysis; normalized detection boxes, per-class counts, observed timestamp, upstream Last-Modified when supplied, hash, and fetch errors.
-- `/data/cameras.json`: complete upstream camera catalog.
-
-## GitHub Pages
-
-The workflow ingests and analyzes 72 cameras per run, rotates through least recently checked cameras, persists cache with GitHub Actions Cache, and deploys `web/`. It runs on pushes, manually, and about every 20 minutes. GitHub can delay schedules; this is not a real-time service guarantee. The dashboard polls the published JSON every minute. GitHub Pages cannot run Python or host SSE; use the included server for continuous collection and streams.
-
-Image bytes are SHA-256 deduplicated before inference. Downloads use six concurrent workers, a 25-second request timeout, a 120-second TTL, and a daily camera catalog cache. Only one latest frame per camera is retained. Cache and inference model persist between scheduled runs; cache eviction can cause a cold start. Fetch failures preserve prior good frames and expose errors. Displayed observation times are fetch/inference times, not guaranteed camera capture times. Unchanged images retain their original observation time.
-
-Filters, search, overlays, activity sorting, stale labels, and paginated rendering work on real analyzed data. Counts represent objects in a still frame, not unique vehicles across frames, speed, traffic volume, road safety, or incident detection. Weather, nighttime, occlusion, and camera angle affect accuracy.
+This optional utility writes photos to the local filesystem and polls cameras;
+it is not the Pages pipeline and must not be run as cloud photo storage. Its
+`/api/events`, `/api/cameras/864/stream` and detection-rich `/data/latest.json`
+endpoints belong to that local server. Pages publishes metadata-only JSON.
 
 ## Verification
 
@@ -69,7 +85,7 @@ Recorded videos use the file's frame rate for motion and are labeled as recorded
 VIDEO_SOURCE=/path/to/camera-video.mp4 VIDEO_CAMERA_ID=864 uvicorn pipeline.server:app --host 0.0.0.0 --port 8000
 ```
 
-The server repeats bounded video sessions; recorded files restart between sessions. Models download on first use. GitHub Actions persists Hugging Face models under `.cache/huggingface`. `--road-model none` disables segmentation for a lightweight CLI run. DINOv2 is not downloaded by scheduled snapshot jobs.
+The server repeats bounded video sessions; recorded files restart between sessions. Models download on first use. The local Python utility stores Hugging Face models under `.cache/huggingface`. `--road-model none` disables segmentation for a lightweight CLI run. DINOv2 is not downloaded by scheduled snapshot jobs.
 
 Compass direction requires a surveyed per-camera road axis in `calibrations.json`; camera-facing direction alone is insufficient. Keys are camera IDs, for example:
 
@@ -91,7 +107,7 @@ The camera explorer starts with heat and road shading off to keep motion legible
 
 Each camera shows its source-check time separately from its analyzed-frame age. A source refresh cannot make DriveBC capture a newer frame; an unchanged upstream image can legitimately remain unchanged. Failed requests retain the last successful source image, or fall back to the cached analyzed image, with a visible failure status. Refreshing source images still works when the published analysis request fails, provided the page already has its camera list.
 
-Source image bytes are hashed with SHA-256. Published boxes, vectors, road shading and sampled heat are shown only on matching images. Fresh images without matching published analysis run through the browser detector described below, so new boxes and per-camera counts appear as local inference completes. Maps and totals follow the latest fully analyzed frames in Live, or saved frames at the history cursor. **View analyzed frame** switches back to the matching cached frame; **Motion-only view** also selects that frame. On GitHub Pages, fresh images do not trigger Python inference: YOLO/SegFormer analysis remains on its separate scheduled workflow. No GitHub token is exposed to visitors.
+Source image bytes are hashed with SHA-256. Published boxes, vectors, road shading and sampled heat are shown only on matching images. Fresh images without matching published analysis run through the browser detector described below, so new boxes and per-camera counts appear as local inference completes. Maps and totals follow the latest fully analyzed frames in Live, or saved frames at the history cursor. **View analyzed frame** switches back to the matching cached frame; **Motion-only view** also selects that frame. On GitHub Pages, fresh images do not trigger Python inference: YOLO/SegFormer/facing inference runs locally in the browser. No GitHub token is exposed to visitors.
 
 `node --test tests/*.test.cjs` checks direct source requests, cache bypass, bounded downloads, unchanged-image reuse, timeouts and last-good-image retention, as well as vector geometry.
 
@@ -433,5 +449,60 @@ checks enforce the contract on tested releases; browser quota, eviction, private
 mode and user-cleared storage can still remove local caches.
 
 The legacy `pipeline.collect` command remains a **local-only** analysis utility;
-it is not invoked or staged by the Pages publishing workflow. Older sections
-about scheduled cloud camera analysis describe that retired deployment path.
+it is not invoked or staged by the Pages publishing workflow. The optional Python analysis sections describe local research utilities.
+
+
+## Local 1,000-image scale verification
+
+The verification cohort contains **1,000 distinct original JPEGs**, SHA-256 checked
+against the pinned official CFV test archive. All 14 test identities are balanced
+at 71–72 photos each, covering all 72 five-degree angle bins. Preparation performs
+no downloads and writes only to `.cache/facing-verification`, outside the site.
+
+```sh
+.venv/bin/python -m pipeline.prepare_facing_verification
+GPU_BENCH_CHROME=/path/to/chrome npm run verify:1000
+```
+
+The command verifies every native photo in IndexedDB, runs the production facing
+cascade through the local retry queue, compares all 1,000 outputs with individual
+GPU inference, reopens offline, retries ten missed jobs (including three injected
+transient failures), renders a 1,000-entry dashboard, and tests retention pruning.
+Photos, prediction files and the report stay local. No verification photos,
+browser profiles or traces are staged for Pages or uploaded to CI.
+
+Measured locally on the Pascal WebGPU adapter:
+
+| Check | Result |
+| --- | --- |
+| Native photos retained | 1,000; 85,308,516 photo bytes |
+| Timed GPU batching | 20.065 s; 49.84 images/s |
+| Timed individual GPU reference | 23.344 s; 42.84 images/s |
+| Original/mirror probability or angle differences | Zero across all 1,000 |
+| Eight-view / front-rear-side accuracy | 91.6% / 96.2% |
+| Single-frame acceptance | 870/1,000; group accuracy 850/870 (97.70%) |
+| Offline cache | 1,000 results; zero inference workers needed |
+| Offline missed-job retry | 10/10 recovered, including 3 transient failures |
+| Dashboard | 1,000 entries; 24 cards; initial render ~204 ms |
+| Decoded bitmap peak | 2.81 MiB; transient 5th image before 4-frame cache eviction |
+| Observed main renderer JS heap peak | ~39.4 MiB; excludes native/GPU allocations |
+| Retention pruning | 497 valid photo/result pairs retained under half-size limit |
+
+Timing excludes three full-path synthetic warmups per pass; their startup cost
+was 3.23 s batched and 2.05 s individual. Timed runs include local reads, decode,
+crop preparation, queue handling and result persistence in both passes.
+The scalar evidence reset occurs outside the timed phase.
+The 125 eight-car worker requests contain 125 compact-stage calls and 310 two-car
+checker calls; they are **not** 125 total GPU executions. Small checker
+microbatches avoid padding every difficult crop to eight cars. Cached backfill
+loads at most eight local photos at once and completion wakes preempt polling
+idle time. Retained result caches remain capped at 512 and exact-crop cache at 256.
+
+CFV supplies the crop boxes, so this does not measure YOLO recall. These are
+all-angle stills, not verified traffic-camera sequences; synthetic cache IDs and
+timestamps test storage/UI scale only. The test identities were previously
+evaluated upstream. No confidence, mirror or lamp thresholds were retuned.
+The broader all-angle accuracy is not comparable to the earlier class-center
+paired-view benchmark. One hardware run verifies this scale, not arbitrary data
+sizes or all devices. The complete local report is
+`.cache/facing-verification/report.json`; raw predictions remain alongside it.

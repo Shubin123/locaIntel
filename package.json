@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "test": "node --test tests/*.test.cjs",
+    "verify:1000": "node scripts/verify-facing-1000.cjs",
     "benchmark:gpu": "node scripts/benchmark-gpu.cjs",
     "test:browser": "node scripts/test-browser.cjs"
   },

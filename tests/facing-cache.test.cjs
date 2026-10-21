@@ -22,3 +22,15 @@ test('paused work, active GPU work and absent local photo bytes never fetch a re
  const busy=setup([row()]);busy.analyzer.running=true;await busy.q.tick();assert.deepEqual(busy.fetched,[]);busy.q.dispose();
  const absent=setup([row()],{records:{a:null}});try{await absent.q.tick();await absent.q.tick();assert.deepEqual(absent.fetched,['a']);assert.deepEqual(absent.requested,[]);}finally{absent.q.dispose();}
 });
+
+test('large cached histories fill a bounded GPU batch across frames before dispatch',async()=>{
+ const rows=Array.from({length:1000},(_,i)=>row('image-'+i)),{q,analyzer,fetched,requested}=setup(rows);analyzer.batchSize=8;let dispatch;
+ analyzer.wake=()=>{dispatch=requested.length;};try{await q.tick();assert.equal(fetched.length,8);assert.equal(requested.length,8);assert.equal(dispatch,8);assert.equal(q.activeHashes.size,8);for(const job of requested)assert(q.wants(job.s.hash));}finally{q.dispose();}
+});
+test('completed GPU work preempts a slow polling timer instead of idling between cached batches',async()=>{
+ const {q}=setup([]);try{q.wake(10000);const old=q.timer;q.wake(0);assert.notEqual(q.timer,old);assert(q.timerAt<=Date.now()+1);}finally{q.dispose();}
+});
+
+test('a thousand unavailable local photos keep bounded missing-photo state',async()=>{
+ const rows=Array.from({length:1000},(_,i)=>row('absent-'+i)),records=Object.fromEntries(rows.map(r=>[r.hash,null])),{q,requested}=setup(rows,{records});try{await q.tick();assert.equal(q.missing.size,256);assert.equal(requested.length,0);}finally{q.dispose();}
+});

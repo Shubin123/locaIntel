@@ -94,11 +94,17 @@ async function batch(data){
     }
   }catch(error){fastError=error.message;pending.length=0;results.fill(undefined);for(let i=0;i<jobs.length;i++)pending.push(i);}
   if(pending.length){
-    const size=cars,model=await batchModel(manifest,'teacher',size),out=await batchOutputs(model,pending.map(i=>jobs[i]),size);
-    for(let j=0;j<pending.length;j++){
-      const i=pending[j],a=j*16,b=j*2;
-      const r=VehicleFacing.classify(out.view_logits.slice(a,a+8),out.angle_fraction[b],manifest,jobs[i].lights,{logits:out.view_logits.slice(a+8,a+16),angle:out.angle_fraction[b+1]});
-      results[i]={...r,model:'CFV ConvNeXt-Small ('+(model.variant.includes('gpu32')?'FP32':'FP16')+')',backend:model.backend,gpu_capture:!!model.capture,path:'full-resolution',gpu_batch_cars:size};
+    // Keep one small checker graph resident. Only uncertain cars reach this
+    // stage; padding it to a larger compact-model batch wastes full-resolution
+    // GPU work. Two-car microbatches retain mirror verification and bounded IO.
+    const size=Math.min(cars,2),model=await batchModel(manifest,'teacher',size);
+    for(let offset=0;offset<pending.length;offset+=size){
+      const indices=pending.slice(offset,offset+size),out=await batchOutputs(model,indices.map(i=>jobs[i]),size);
+      for(let j=0;j<indices.length;j++){
+        const i=indices[j],a=j*16,b=j*2;
+        const r=VehicleFacing.classify(out.view_logits.slice(a,a+8),out.angle_fraction[b],manifest,jobs[i].lights,{logits:out.view_logits.slice(a+8,a+16),angle:out.angle_fraction[b+1]});
+        results[i]={...r,model:'CFV ConvNeXt-Small ('+(model.variant.includes('gpu32')?'FP32':'FP16')+')',backend:model.backend,gpu_capture:!!model.capture,path:'full-resolution',gpu_batch_cars:size};
+      }
     }
   }
   const elapsed=performance.now()-start;

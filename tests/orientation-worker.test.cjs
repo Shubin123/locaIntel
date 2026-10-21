@@ -15,12 +15,12 @@ test('a failed fast graph still permits the full-resolution model',async()=>{con
 
 test('full-resolution GPU checker batches both verification views',async()=>{const w=worker({ambiguous:true,batched:true}),reply=await w.send();assert.equal(reply.result.path,'full-resolution');assert.equal(reply.result.mirror_consistent,true);assert.equal(w.runs.length,2);assert.equal(w.runs[1].dims[0],2);});
 
-test('four distinct cars use one eight-view GPU call per stage and map to their own crops',async()=>{
+test('four distinct cars share the compact GPU stage and map through bounded checker microbatches',async()=>{
  const w=worker({ambiguous:true}),reply=await w.sendBatch(4);
  assert.equal(reply.batchError,null);assert.equal(reply.results.length,4);
- assert.deepEqual(w.runs.map(r=>r.dims[0]),[8,8]);assert.equal(w.sessions.length,2);
+ assert.deepEqual(w.runs.map(r=>r.dims[0]),[8,4,4]);assert.equal(w.sessions.length,2);
  assert.deepEqual(reply.results.map(r=>r.facing),['away_from_camera','toward_camera','away_from_camera','toward_camera']);
- reply.results.forEach((r,i)=>{assert.equal(r.crop.width,50+i);assert.equal(r.gpu_batch_cars,4);assert.equal(r.batch_count,4);assert.equal(r.mirror_consistent,true);});
+ reply.results.forEach((r,i)=>{assert.equal(r.crop.width,50+i);assert.equal(r.gpu_batch_cars,2);assert.equal(r.batch_count,4);assert.equal(r.mirror_consistent,true);});
 });
 test('mixed fast/full routes compact difficult crops into the checker and retain result ordering',async()=>{
  const w=worker({mixed:true}),reply=await w.sendBatch(4);
@@ -29,7 +29,7 @@ test('mixed fast/full routes compact difficult crops into the checker and retain
 });
 test('partial batches run immediately and retain the selected graph for subsequent calls',async()=>{
  const w=worker({ambiguous:true});let reply=await w.sendBatch(3,4);assert.equal(reply.results.length,3);assert.equal(w.runs[0].dims[0],8);
- const count=w.sessions.length;reply=await w.sendBatch(1,4);assert.equal(reply.results.length,1);assert.equal(w.sessions.length,count);assert.equal(w.runs.at(-1).dims[0],8);assert.equal(w.runs.at(-1).input[2*150528],0);
+ const count=w.sessions.length;reply=await w.sendBatch(1,4);assert.equal(reply.results.length,1);assert.equal(w.sessions.length,count);assert.equal(w.runs.at(-1).dims[0],4);assert.equal(w.runs.at(-1).input[2*150528],0);
 });
 test('GPU batch creation and execution errors recover through individual verified crops',async()=>{
  for(const options of [{batchGraphFailure:true},{batchRunFailure:true}]){
@@ -37,6 +37,6 @@ test('GPU batch creation and execution errors recover through individual verifie
   assert.match(reply.batchError,/GPU batch/);assert.equal(reply.results.length,2);assert(reply.results.every(r=>r.gpu_batch_cars===1&&r.mirror_consistent));
  }
 });
-test('changing batch size releases the old checker and compact sessions',async()=>{
- const w=worker({ambiguous:true});await w.sendBatch(2);const old=w.sessions.filter(s=>s.variant.includes('-cars'));await w.sendBatch(4);assert(old.every(s=>s.released));
+test('changing compact batch size releases its old graph and retains the bounded checker',async()=>{
+ const w=worker({ambiguous:true});await w.sendBatch(2);const old=w.sessions.filter(s=>s.variant.includes('-cars'));await w.sendBatch(4);assert(old.filter(s=>s.variant.includes('fast')).every(s=>s.released));assert(old.filter(s=>!s.variant.includes('fast')).every(s=>!s.released));
 });
