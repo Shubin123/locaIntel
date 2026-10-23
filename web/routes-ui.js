@@ -101,7 +101,8 @@
     $('route-candidates-summary').textContent=significant?`Routes (${found.length})`:`Show ${found.length} candidate links anyway`;
     if(significant)$('route-candidates').open=true;
     renderSeries(sightings,end-windowMs,end);
-    renderTracks(rows.map(r=>({...r,camera:{...byId.get(r.cameraId),...Object.fromEntries(Object.entries(r.camera||{}).filter(([,v])=>v!=null))}})));
+    const trackList=renderTracks(rows.map(r=>({...r,camera:{...byId.get(r.cameraId),...Object.fromEntries(Object.entries(r.camera||{}).filter(([,v])=>v!=null))}})));
+    renderJourneys(sightings,trackList);
     $('routes-status').textContent=`${rows.length} saved frames from ${new Set(rows.map(r=>r.cameraId)).size} cameras between ${time(end-windowMs)} and ${time(end)}. ${headed}/${sightings.length} vehicles have a compass heading; ${described}/${sightings.length} have a colour profile. ${!$('route-highway').value?'Choose a corridor so its cameras refresh together. ':''}${isLive()?'Live: new photos extend routes as they arrive.':'Showing routes before the timeline cursor.'}`;
     notifyPane('routes','Vehicle routes',[found.map(r=>r.id),flows.length],$('routes-updated'),$('routes-pane'));
   }
@@ -131,6 +132,24 @@
     SmoothUI.list($('track-list'),items);
     if(routeMap){trackLayer.clearLayers();const per=new Map();for(const t of found){const c=t.camera;if(!Number.isFinite(c.lat))continue;const e=per.get(t.cameraId)||{c,moving:0,still:0};e[t.state==='moving'?'moving':'still']++;per.set(t.cameraId,e);}
       for(const {c,moving,still}of per.values())L.circleMarker([c.lat,c.lon],{radius:4+Math.min(10,moving+still),color:'#c3a1ff',weight:2,fillOpacity:.25}).bindTooltip(`${c.name}: ${moving} moving, ${still} waiting/parked vehicle tracks`).addTo(trackLayer);}
+    return found;
+  }
+  // Camera-to-camera routes: handoffs between views of one site (captured seconds
+  // apart), joined with same-camera tracks, trusted only when they beat the decoy.
+  function renderJourneys(sightings,trackList){
+    const hand=R.handoffs(sightings),expected=R.handoffChance(sightings),trusted=hand.length>=Math.max(2,expected*2+1),list=R.journeys(sightings,trackList,hand);
+    $('journey-verdict').textContent=!hand.length?'No vehicle has been matched between two cameras yet. Multi-view sites, where one camera looks each way, show up first.':
+      `${hand.length} camera-to-camera handoffs vs ~${expected.toFixed(1)} expected by chance (shifted clocks) · ${list.length} routes across cameras. ${trusted?'These handoffs clearly beat chance.':'Not yet clearly above chance; keep sampling.'}`;
+    $('journey-verdict').classList.toggle('weak',!trusted&&hand.length>0);
+    const items=list.slice(0,20).map(j=>{
+      const item=node('li',undefined,'route-item journey-item');item.dataset.key=j.id;
+      const names=j.cameras.map(id=>j.hops.find(h=>h.cameraId===id).camera.name||id),secs=Math.round(j.seconds);
+      item.append(node('strong',`${j.colour?j.colour[0].toUpperCase()+j.colour.slice(1)+' ':''}${j.label}${j.heading?' heading '+j.heading:''}`),node('span',`${names.join(' → ')} · ${j.hops.length} sightings · ${secs<120?secs+' s':Math.round(secs/60)+' min'} · ${time(j.start)}–${time(j.end)}`));
+      const hops=node('div',undefined,'route-hops');for(const h of j.hops){const hop=node('button',undefined,'route-hop');hop.type='button';hop.title=`Inspect ${h.camera.name||h.cameraId}`;hop.append(thumbnail(h),node('span',`${new Date(h.t).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})} · ${h.camera.name||h.cameraId}`));hop.onclick=()=>{selectCamera(h.cameraId);$('detail-pane').scrollIntoView({behavior:'smooth',block:'center'});};hops.append(hop);}
+      item.append(hops);return item;
+    });
+    SmoothUI.list($('journey-list'),items);
+    if(routeMap)for(const j of list){const c=j.hops[0].camera;if(Number.isFinite(c.lat))L.circleMarker([c.lat,c.lon],{radius:9,color:trusted?'#ffd36b':'#8c7633',weight:3,fillOpacity:.15}).bindTooltip(`${j.cameras.length}-camera route · ${j.hops.length} sightings`).addTo(routeLayer);}
   }
   function schedule(){clearTimeout(paintTimer);paintTimer=setTimeout(render,250);}
   for(const id of ['route-window','route-confidence','route-flows'])$(id).addEventListener('input',schedule);

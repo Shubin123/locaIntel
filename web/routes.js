@@ -34,7 +34,7 @@
   }
   function colourName(f){
     if(!f)return 'unknown colour';const hue=f.slice(0,8),chroma=hue.reduce((a,b)=>a+b,0);
-    if(chroma>.12){const k=hue.indexOf(Math.max(...hue));return ['red','orange','yellow','green','teal','blue','purple','pink'][k];}
+    if(chroma>.2){const k=hue.indexOf(Math.max(...hue));return ['red','orange','yellow','green','blue','indigo','purple','pink'][k];}
     const v=f.slice(8,12),mean=(v[0]*.12+v[1]*.37+v[2]*.62+v[3]*.88)/Math.max(1e-6,v.reduce((a,b)=>a+b,0));
     return mean>.66?'white':mean<.3?'black':'grey';
   }
@@ -69,7 +69,7 @@
         if(!['car','truck','bus','motorcycle'].includes(d.label))continue;
         // Low-tier facing (~55% held-out accuracy) is too weak to steer a link.
         const o=row.facing?.byDetection?.[i],f=row.routeFeatures?.byDetection?.[i]||null,h=o?.tier==='low'?null:heading(camera,o);
-        out.push({key:row.key+':'+i,frame:row.key,hash:row.hash,index:i,cameraId:row.cameraId,camera,lat:camera.lat,lon:camera.lon,t:captured(row),label:d.label,box:d.box,area:size(d),heading:h,facing:o?.state==='estimated'?o.facing:null,confidence:o?.confidence??null,colour:f,colourName:colourName(f)});
+        out.push({key:row.key+':'+i,id:row.key+'|'+JSON.stringify([d.label,d.box]),frame:row.key,hash:row.hash,index:i,cameraId:row.cameraId,camera,lat:camera.lat,lon:camera.lon,t:captured(row),label:d.label,box:d.box,area:size(d),heading:h,facing:o?.state==='estimated'?o.facing:null,confidence:o?.confidence??null,colour:f,colourName:colourName(f)});
       }
     }
     return out.sort((a,b)=>a.t-b.t);
@@ -174,7 +174,7 @@
         const A=list[i-1],B=list[i],gap=captured(B)-captured(A);
         if(gap<=0||gap>maxGap||A.features.pixelSignature===B.features.pixelSignature||meanDifference(A.features.background,B.features.background)>=.035)continue;
         for(const [j,ia]of matcher(A.features,decoy?mirrorFrame(B.features):B.features,match)){
-          const hop=(row,k)=>{const d=row.features.detections[k],fp=JSON.stringify([d.label,d.box]),o=row.facing?.byFingerprint?.[fp]||Object.values(row.facing?.byDetection||{}).find(x=>x?.fingerprint===fp);return {key:row.key+':'+k,frame:row.key,hash:row.hash,index:k,cameraId:row.cameraId,camera:row.camera||{},t:captured(row),label:d.label,box:d.box,orientation:o?.state==='estimated'?o:null};};
+          const hop=(row,k)=>{const d=row.features.detections[k],fp=JSON.stringify([d.label,d.box]),o=row.facing?.byFingerprint?.[fp]||Object.values(row.facing?.byDetection||{}).find(x=>x?.fingerprint===fp);return {key:row.key+':'+k,id:row.key+'|'+fp,frame:row.key,hash:row.hash,index:k,cameraId:row.cameraId,camera:row.camera||{},t:captured(row),label:d.label,box:d.box,orientation:o?.state==='estimated'?o:null};};
           let track=open.get(A.key+':'+ia);if(!track){track={hops:[hop(A,ia)]};out.push(track);}
           track.hops.push(hop(B,j));open.set(B.key+':'+j,track);
         }
@@ -188,6 +188,41 @@
         heading:compass==null?null:compassName(compass)};
     }).sort((a,b)=>b.hops.length-a.hops.length||b.seconds-a.seconds);
   }
+  // Handoffs: views at one DriveBC site capture within seconds of each other, so a
+  // vehicle approaching in one view appears moments later in another (for example
+  // toward the camera looking north, then away from it looking south). Matches need
+  // cameras within 200 m, captures within 30 s, the same compass heading, a close
+  // colour and class match, and must be mutual-best with a clear margin.
+  function handoffs(list,{maxSeconds=30,maxDistance=200,minSimilarity=.7,neutralSimilarity=.85,margin=.05,maxHeading=45}={}){
+    list=[...list].filter(s=>s.heading!=null&&s.colour).sort((a,b)=>a.t-b.t);const pairs=[],cache=new Map();
+    for(let i=0;i<list.length;i++){const a=list[i];
+      for(let j=i+1;j<list.length&&list[j].t-a.t<=maxSeconds*1000;j++){const b=list[j];
+        if(b.cameraId===a.cameraId||!labelsCompatible(a.label,b.label)||geometry(cache,a,b).distance>maxDistance||diff(a.heading,b.heading)>maxHeading)continue;
+        const look=similarity(a.colour,b.colour);if(look<(NEUTRAL.has(colourName(a.colour))?neutralSimilarity:minSimilarity))continue;
+        pairs.push({a,b,similarity:look,seconds:(b.t-a.t)/1000});}}
+    const from=new Map(),to=new Map();for(const p of pairs){(from.get(p.a.key)||from.set(p.a.key,[]).get(p.a.key)).push(p);(to.get(p.b.key)||to.set(p.b.key,[]).get(p.b.key)).push(p);}
+    const unique=(group,p)=>{const g=group.sort((x,y)=>y.similarity-x.similarity);return g[0]===p&&(!g[1]||p.similarity-g[1].similarity>=margin);};
+    return pairs.filter(p=>unique(from.get(p.a.key),p)&&unique(to.get(p.b.key),p)).map(p=>({...p,confidence:Math.min(1,(p.similarity-.6)/.35)*.7+distinctiveness(p.a.colour)*.3}));
+  }
+  // Decoy for handoffs: shifted camera clocks leave only coincidental same-time captures.
+  function handoffChance(list,options={},trials=8){
+    if(!list.length)return 0;let seed=11,total=0;const rand=()=>(seed=(seed*16807)%2147483647)/2147483647,ids=[...new Set(list.map(s=>s.cameraId))];
+    for(let k=0;k<trials;k++){const shift=new Map(ids.map(id=>[id,(rand()<.5?-1:1)*(10+rand()*10)*60000]));total+=handoffs(list.map(s=>({...s,t:s.t+shift.get(s.cameraId)})),options).length;}
+    return total/trials;
+  }
+  // Journeys join handoffs with same-camera tracks into one vehicle's route across
+  // cameras and time (for example queued at one view for minutes, then handed off).
+  function journeys(sightingList,trackList,handoffList){
+    const parent=new Map(),find=x=>{while(parent.get(x)!==x){parent.set(x,parent.get(parent.get(x)));x=parent.get(x);}return x;},add=x=>{if(!parent.has(x))parent.set(x,x);},join=(a,b)=>{add(a);add(b);parent.set(find(a),find(b));};
+    const nodes=new Map();for(const s of sightingList)nodes.set(s.id,s);
+    for(const t of trackList)for(let i=1;i<t.hops.length;i++){for(const h of t.hops)if(!nodes.has(h.id))nodes.set(h.id,h);join(t.hops[i-1].id,t.hops[i].id);}
+    for(const h of handoffList)join(h.a.id,h.b.id);
+    const groups=new Map();for(const id of parent.keys()){const r=find(id);(groups.get(r)||groups.set(r,[]).get(r)).push(nodes.get(id));}
+    return [...groups.values()].filter(g=>g.every(Boolean)&&new Set(g.map(x=>x.cameraId)).size>=2).map(g=>{
+      const hops=g.sort((a,b)=>a.t-b.t),sight=hops.find(x=>x.heading!=null);
+      return {id:hops[0].id,hops,cameras:[...new Set(hops.map(h=>h.cameraId))],start:hops[0].t,end:hops.at(-1).t,seconds:(hops.at(-1).t-hops[0].t)/1000,label:hops[0].label,colour:sight?.colourName||'',heading:sight?compassName(sight.heading):null};
+    }).sort((a,b)=>b.hops.length-a.hops.length||b.end-a.end);
+  }
   // Per-camera compass flow from facing alone, robust even when no route links.
   function flows(list){
     const cams=new Map();
@@ -198,5 +233,5 @@
     for(const c of cams.values()){const order=c.bins.map((n,i)=>[n,i]).sort((a,b)=>b[0]-a[0]);c.dominant=order[0][0]?{direction:NAMES[order[0][1]],bearing:order[0][1]*45,share:order[0][0]/c.headed}:null;c.secondary=order[1][0]?{direction:NAMES[order[1][1]],bearing:order[1][1]*45,share:order[1][0]/c.headed}:null;}
     return [...cams.values()];
   }
-  root.VehicleRoutes={VERSION,lookBearing,relativeHeading,heading,distance,bearing,describePixels,describe,colourName,similarity,sightings,link,routes,chance,trackMatches,tracks,flowSeries,flows,compassName};
+  root.VehicleRoutes={VERSION,lookBearing,relativeHeading,heading,distance,bearing,describePixels,describe,colourName,similarity,sightings,link,routes,chance,handoffs,handoffChance,journeys,trackMatches,tracks,flowSeries,flows,compassName};
 })(globalThis);

@@ -31,3 +31,7 @@ if(process.env.DECOYS){
   }
   console.log(JSON.stringify({real_routes:found.length,decoy_routes:counts,decoy_mean:counts.reduce((a,b)=>a+b,0)/counts.length}));
 }
+// Same-site handoffs between views of one interchange, against shifted-clock decoys.
+const hand=VehicleRoutes.handoffs(sightings);
+console.log(JSON.stringify({handoffs:hand.length,handoff_chance:+VehicleRoutes.handoffChance(sightings,{},20).toFixed(2),
+  examples:hand.slice(0,6).map(h=>`${h.a.camera.name} → ${h.b.camera.name} · ${h.a.colourName} ${h.a.label} heading ${VehicleRoutes.compassName(h.a.heading)} · ${h.seconds}s · ${h.a.facing} → ${h.b.facing}`)},null,1));

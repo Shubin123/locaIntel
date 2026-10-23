@@ -57,3 +57,17 @@ test('same-camera tracks chain a vehicle across consecutive frames; mirrored dec
   assert.equal(R.tracks([frame(0,.2),frame(1,.25,'1',Array(50).fill(.9))]).length,0,'a changed camera view breaks tracks');
   assert.equal(R.tracks([frame(0,.2),frame(40,.25)]).length,0,'gaps over 30 minutes break tracks');
 });
+test('same-site handoffs link one vehicle between views captured seconds apart, and journeys join them with tracks',()=>{
+  // Two views from one pole: looking north and looking south.
+  const north={id:'n',lat:49.2,lon:-123.1,orientation:'N'},south={id:'s',lat:49.2,lon:-123.1,orientation:'S'};
+  const view=(cam,t,facing,colour,box=[.4,.6,.5,.7])=>({key:cam.id+':'+t,hash:cam.id+t,cameraId:cam.id,observedAt:t,camera:cam,detections:[{label:'car',box}],
+    facing:{byDetection:{0:{state:'estimated',facing,tier:'high'}}},routeFeatures:{byDetection:{0:colour}}});
+  // Southbound red car: toward the north-looking camera, then away from the south-looking one 4 s later.
+  const rows=[view(north,1000,'toward_camera',red),view(south,5000,'away_from_camera',red),view(south,5000,'away_from_camera',blue,[.1,.6,.2,.7])];
+  const list=R.sightings(rows),h=R.handoffs(list);
+  assert.equal(h.length,1);assert.equal(h[0].a.cameraId,'n');assert.equal(h[0].b.cameraId,'s');assert.equal(h[0].seconds,4);
+  assert.equal(R.handoffs(R.sightings([view(north,1000,'toward_camera',red),view(south,5000,'toward_camera',red)])).length,0,'opposite headings never hand off');
+  assert.equal(R.handoffs(R.sightings([view(north,1000,'toward_camera',red),view(south,61000,'away_from_camera',red)])).length,0,'captures a minute apart are too far apart');
+  const journeys=R.journeys(list,[],h);assert.equal(journeys.length,1);assert.deepEqual([...journeys[0].cameras],['n','s']);assert.equal(journeys[0].heading,'S');
+  assert.ok(R.handoffChance(list)<=1);
+});
