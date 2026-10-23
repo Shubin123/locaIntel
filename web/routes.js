@@ -213,15 +213,22 @@
   // Journeys join handoffs with same-camera tracks into one vehicle's route across
   // cameras and time (for example queued at one view for minutes, then handed off).
   function journeys(sightingList,trackList,handoffList){
-    const parent=new Map(),find=x=>{while(parent.get(x)!==x){parent.set(x,parent.get(parent.get(x)));x=parent.get(x);}return x;},add=x=>{if(!parent.has(x))parent.set(x,x);},join=(a,b)=>{add(a);add(b);parent.set(find(a),find(b));};
-    const nodes=new Map();for(const s of sightingList)nodes.set(s.id,s);
-    for(const t of trackList)for(let i=1;i<t.hops.length;i++){for(const h of t.hops)if(!nodes.has(h.id))nodes.set(h.id,h);join(t.hops[i-1].id,t.hops[i].id);}
-    for(const h of handoffList)join(h.a.id,h.b.id);
-    const groups=new Map();for(const id of parent.keys()){const r=find(id);(groups.get(r)||groups.set(r,[]).get(r)).push(nodes.get(id));}
-    return [...groups.values()].filter(g=>g.every(Boolean)&&new Set(g.map(x=>x.cameraId)).size>=2).map(g=>{
-      const hops=g.sort((a,b)=>a.t-b.t),sight=hops.find(x=>x.heading!=null);
-      return {id:hops[0].id,hops,cameras:[...new Set(hops.map(h=>h.cameraId))],start:hops[0].t,end:hops.at(-1).t,seconds:(hops.at(-1).t-hops[0].t)/1000,label:hops[0].label,colour:sight?.colourName||'',heading:sight?compassName(sight.heading):null};
-    }).sort((a,b)=>b.hops.length-a.hops.length||b.end-a.end);
+    // Paths in time order: each sighting follows its earliest successor (track or
+    // handoff). A handoff never returns to a camera already on the path, so loops
+    // through a site's views cannot merge different vehicles into one route.
+    const nodes=new Map(),next=new Map(),incoming=new Set();for(const s of sightingList)nodes.set(s.id,s);
+    const edge=(a,b,kind)=>{if(!nodes.has(a.id))nodes.set(a.id,a);if(!nodes.has(b.id))nodes.set(b.id,b);const prior=next.get(a.id);if(!prior||nodes.get(prior.to).t>b.t)next.set(a.id,{to:b.id,kind});};
+    for(const t of trackList)for(let i=1;i<t.hops.length;i++)edge(t.hops[i-1],t.hops[i],'track');
+    for(const h of handoffList)edge(h.a,h.b,'handoff');
+    for(const e of next.values())incoming.add(e.to);
+    const out=[];
+    for(const id of next.keys()){
+      if(incoming.has(id))continue;const hops=[nodes.get(id)],cams=new Set([hops[0].cameraId]);let cur=next.get(id);
+      while(cur&&hops.length<20){const n=nodes.get(cur.to);if(cur.kind==='handoff'&&cams.has(n.cameraId))break;hops.push(n);cams.add(n.cameraId);cur=next.get(cur.to);}
+      if(cams.size<2)continue;const sight=hops.find(x=>x.heading!=null);
+      out.push({id:hops[0].id,hops,cameras:[...cams],start:hops[0].t,end:hops.at(-1).t,seconds:(hops.at(-1).t-hops[0].t)/1000,label:hops[0].label,colour:sight?.colourName||'',heading:sight?compassName(sight.heading):null});
+    }
+    return out.sort((a,b)=>b.hops.length-a.hops.length||b.end-a.end);
   }
   // Per-camera compass flow from facing alone, robust even when no route links.
   function flows(list){

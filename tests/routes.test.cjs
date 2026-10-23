@@ -71,3 +71,10 @@ test('same-site handoffs link one vehicle between views captured seconds apart, 
   const journeys=R.journeys(list,[],h);assert.equal(journeys.length,1);assert.deepEqual([...journeys[0].cameras],['n','s']);assert.equal(journeys[0].heading,'S');
   assert.ok(R.handoffChance(list)<=1);
 });
+test('a route never loops back to a camera through handoffs',()=>{
+  const cams=['s','w','n'].map(id=>({id,lat:49.1,lon:-122.5,orientation:id.toUpperCase()}));
+  const mk=(cam,t)=>({id:cam.id+t,key:cam.id+t,cameraId:cam.id,camera:cam,t,label:'car',heading:180,colour:red,colourName:'red'});
+  const a=mk(cams[0],0),b=mk(cams[1],4000),c=mk(cams[2],8000),d=mk(cams[0],12000);
+  const j=R.journeys([a,b,c,d],[],[{a,b},{a:b,b:c},{a:c,b:d}]);
+  assert.equal(j.length,1);assert.equal(JSON.stringify(j[0].hops.map(h=>h.cameraId)),'["s","w","n"]','the return to camera s is cut');
+});

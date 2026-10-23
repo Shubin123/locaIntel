@@ -1,6 +1,6 @@
 /* Static app shell only. Photos/evidence live in IndexedDB; model weights use
  * the runtime's checksummed model cache. No server API stores user data. */
-const SHELL='locaintel-shell-routes-6';
+const SHELL='locaintel-shell-routes-7';
 const ASSETS=['./','index.html','style.css','app.js','sources.js','motion.js','detector.js','monitor.js','smooth.js','temporal.js','orientation.js','road.js','heading.js','paired-facing.js','facing-cache.js','capture-pair.js','routes.js','routes-ui.js','models/paired-facing-v1.json','models/vehicle-facing-v3.json','orientation-worker.js','detect-worker.js','road-worker.js','inference-runtime.js','vendor/leaflet.js','vendor/leaflet.css','vendor/leaflet-heat.js','vendor/ort/ort.webgpu.min.js','vendor/ort/ort.wasm.min.js','vendor/ort/ort.webgl.min.js'];
 self.addEventListener('install',event=>event.waitUntil(caches.open(SHELL).then(cache=>cache.addAll(ASSETS.map(asset=>new Request(asset,{cache:'reload'})))).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil((async()=>{for(const key of await caches.keys())if(key.startsWith('locaintel-shell-')&&key!==SHELL)await caches.delete(key);await self.clients.claim();})()));
