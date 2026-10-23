@@ -2,7 +2,7 @@
 (function(root){
   // v3: one DriveBC-adapted model for every car, truck and bus. LEGACY tags the
   // retired CFV cascade (classify/fastClassify), kept for archived results.
-  const VERSION='drivebc-facing-v3',LEGACY='cfv-facing-cascade-v4',SIZE=224,supported=new Set(['car','truck','bus']);
+  const VERSION='drivebc-facing-v3.1',LEGACY='cfv-facing-cascade-v4',SIZE=224,supported=new Set(['car','truck','bus']);
   // Travel direction relative to the camera's look direction for each CFV view (0 = away, 180 = toward).
   // CFV's left-side view shows the car's left flank, so its nose points image-right (checked on DriveBC crops).
   const OFFSETS=[180,135,90,45,0,315,270,225],GLYPHS={0:'↑',45:'↗',90:'→',135:'↘',180:'↓',225:'↙',270:'←',315:'↖'};
@@ -125,7 +125,7 @@
     return prepared.quality?{...base,state:'unknown',facing:'unknown',reason:prepared.quality,image_direction:undefined,facing_glyph:undefined,quality_abstention:true}:base;
   }
   class CropOrientation{
-    constructor({workerFactory=()=>new Worker('orientation-worker.js?v=facing-v3-merge'),prepareCrop=createPreparer(),onChange=()=>{},onResult=()=>{},isPaused=()=>false,isWanted=()=>true,delayMs=350,timeout=90000,batchSize=1,retryDelays=[2000,10000],onModelUpdate=()=>{}}={}){
+    constructor({workerFactory=()=>new Worker('orientation-worker.js?v=facing-v3-1'),prepareCrop=createPreparer(),onChange=()=>{},onResult=()=>{},isPaused=()=>false,isWanted=()=>true,delayMs=350,timeout=90000,batchSize=1,retryDelays=[2000,10000],onModelUpdate=()=>{}}={}){
       Object.assign(this,{workerFactory,prepareCrop,onChange,onResult,isPaused,isWanted,delayMs,timeout});this.retryDelays=retryDelays;this.onModelUpdate=onModelUpdate;this.batchSize=[1,2,4,8].includes(Number(batchSize))?Number(batchSize):1;this.version=VERSION;this.entries=new Map();this.visualEntries=new Map();this.queue=[];this.running=false;this.worker=null;this.serial=0;this.waiter=null;this.cooldown=null;this.phase='idle';
     }
     key(source,d){return source.cameraId+':'+source.hash+':'+fingerprint(d);}

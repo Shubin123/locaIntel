@@ -2,7 +2,7 @@
   "version": "drivebc-facing-v3",
   "file": "drivebc-facing-v3.onnx",
   "bytes": 16852997,
-  "sha256": "0b5bc0720f3d5d2571f5427d3414f96cc3a476fd5cabdb2ea8678a410fab305d",
+  "sha256": "3f3f6a9438ee263cfd97be58c1dba5e1c7c283abc4df6b8001b317b5a206218c",
   "model": "MobileNetV3-Large, CFV + DriveBC adapted",
   "input": {
     "size": 224,
@@ -20,31 +20,31 @@
     "front_right"
   ],
   "policy": {
-    "high": 0.95,
-    "medium": 0.7
+    "high": 0.88,
+    "medium": 0.64
   },
   "crossval": {
-    "labels": 474,
-    "cameras": 241,
+    "labels": 657,
+    "cameras": 342,
     "folds": 5,
-    "baseline_accuracy": 0.5021097046413502,
-    "adapted_accuracy": 0.7426160337552743,
+    "baseline_accuracy": 0.4961948249619482,
+    "adapted_accuracy": 0.7473363774733638,
     "tiers": {
       "high": {
-        "share": 0.36075949367088606,
-        "accuracy": 0.9005847953216374
+        "share": 0.532724505327245,
+        "accuracy": 0.9
       },
       "medium": {
-        "share": 0.3987341772151899,
-        "accuracy": 0.7142857142857143
+        "share": 0.3059360730593607,
+        "accuracy": 0.6417910447761194
       },
       "low": {
-        "share": 0.24050632911392406,
-        "accuracy": 0.5526315789473685
+        "share": 0.1613394216133942,
+        "accuracy": 0.44339622641509435
       }
     }
   },
   "labels": "pipeline/data/drivebc-facing-labels.json",
   "limitations": "Visible side of the vehicle from one photo. Accuracy measured on hand-labeled DriveBC crops with camera-grouped cross-validation; facing is not measured motion.",
-  "checkpoint_sha256": "0fdf2fe121fdaad8a1592b137dcf51a7c0fcdf9940f63e252c5b7929df960fbc"
+  "checkpoint_sha256": "d8e9d3962c0d76459f60fb330447a44052817536073f4576ecd88a5c7dea38cd"
 }

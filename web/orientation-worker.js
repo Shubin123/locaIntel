@@ -1,11 +1,11 @@
-importScripts('inference-runtime.js?v=gpu-batch-1','orientation.js?v=facing-v3-merge');
+importScripts('inference-runtime.js?v=gpu-batch-1','orientation.js?v=facing-v3-1');
 // One DriveBC-adapted model. Each car contributes its crop and mirror as two
 // rows; up to eight cars share a single dynamic-batch dispatch.
 let ready;
 async function load(){
   if(!ready)ready=(async()=>{
     self.postMessage({phase:'loading'});
-    const response=await fetch('models/vehicle-facing-v3.json?v=facing-v3-merge');if(!response.ok)throw Error('Facing manifest HTTP '+response.status);const manifest=await response.json();
+    const response=await fetch('models/vehicle-facing-v3.json?v=facing-v3-1');if(!response.ok)throw Error('Facing manifest HTTP '+response.status);const manifest=await response.json();
     const spec={file:'models/'+manifest.file,sha256:manifest.sha256},model=await new ModelRuntime.Session(spec,spec).initialize();
     return {manifest,model};
   })().catch(error=>{ready=null;throw error;});return ready;

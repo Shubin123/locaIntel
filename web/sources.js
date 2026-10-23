@@ -1,4 +1,11 @@
 /* Direct upstream snapshot refresh; no GitHub credentials or inference server required. */
+// DriveBC dropped Last-Modified; its Expires header is capture time + 1 s and is CORS-readable.
+function upstreamTime(headers) {
+  const modified = headers?.get?.('last-modified');
+  if (modified) return modified;
+  const expires = Date.parse(headers?.get?.('expires') || '');
+  return Number.isFinite(expires) ? new Date(expires - 1000).toUTCString() : null;
+}
 globalThis.CameraSourceCache = class CameraSourceCache {
   constructor({ fetcher = (...args) => fetch(...args), digest = bytes => crypto.subtle.digest('SHA-256', bytes),
     makeURL = blob => URL.createObjectURL(blob), revokeURL = url => URL.revokeObjectURL(url),
@@ -35,7 +42,7 @@ globalThis.CameraSourceCache = class CameraSourceCache {
       const dimensions=await this.validate(blob);
       const hash = Array.from(new Uint8Array(await this.digest(await blob.arrayBuffer())), b => b.toString(16).padStart(2, '0')).join('');
       const url = previous?.hash === hash && previous.url ? previous.url : this.makeURL(blob);
-      const entry = { hash, url, blob, cameraId:id, width:dimensions?.width,height:dimensions?.height, checked: new Date().toISOString(), modified: response.headers.get('last-modified'), error: null };
+      const entry = { hash, url, blob, cameraId:id, width:dimensions?.width,height:dimensions?.height, checked: new Date().toISOString(), modified: upstreamTime(response.headers), error: null };
       this.entries.set(id, entry);
       // Let existing rendered <img> elements finish swapping to their new URLs.
       if (previous?.url && previous.url !== url) this.retired.add(previous.url);

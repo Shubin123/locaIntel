@@ -38,7 +38,7 @@ const server=http.createServer((req,res)=>{
   let coverage=await page.evaluate(()=>{const c=displayedCamera(data.cameras[0]);return {cars:c.detections.length,ran:c.detections.filter(d=>d.orientation.model_ran).length,abstained:c.detections.filter(d=>d.orientation.quality_abstention).length,backend:facingAnalyzer.backend};});
   assert.equal(coverage.ran,5);assert.equal(coverage.abstained,1,'only the sub-8×6-pixel box abstains');assert.equal(coverage.backend,expectedBackend);console.log('Facing coverage:',coverage);
   const single=await page.evaluate(()=>displayedCamera(data.cameras[0]).detections.map(d=>({state:d.orientation.state,tier:d.orientation.tier,version:d.orientation.version})));
-  assert.equal(single.filter(o=>o.state==='estimated'&&['high','medium','low'].includes(o.tier)&&o.version==='drivebc-facing-v3').length,4,'every car at least 8×6 px, including the clipped one, gets a tiered single-photo estimate');
+  assert.equal(single.filter(o=>o.state==='estimated'&&['high','medium','low'].includes(o.tier)&&o.version==='drivebc-facing-v3.1').length,4,'every car at least 8×6 px, including the clipped one, gets a tiered single-photo estimate');
   // Archived results from the retired CFV cascade still go through two-screenshot
   // confirmation. This fixture checks that plumbing, not model accuracy.
   await page.evaluate(async()=>{

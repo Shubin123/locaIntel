@@ -54,10 +54,12 @@
     const rows=[...archiveMetadata.values()].filter(r=>r.observedAt<=end&&r.observedAt>=end-windowMs&&r.detections&&inCorridor(r.camera||byId.get(r.cameraId)));
     const sightings=R.sightings(rows.map(r=>({...r,camera:{...byId.get(r.cameraId),...Object.fromEntries(Object.entries(r.camera||{}).filter(([,v])=>v!=null))}})));
     const found=R.routes(sightings).filter(r=>r.confidence>=minConfidence),flows=R.flows(sightings);
-    const version=signature([end-end%30000,windowMs,minConfidence,$('route-highway').value,$('route-flows').checked,selectedRoute,sightings.length,found.map(r=>[r.id,r.hops.length]),flows.map(f=>[f.cameraId,f.bins])]);
+    const version=signature([end-end%30000,windowMs,minConfidence,$('route-highway').value,$('route-flows').checked,selectedRoute,$('route-candidates').open,sightings.length,found.map(r=>[r.id,r.hops.length]),flows.map(f=>[f.cameraId,f.bins])]);
     if(version===lastVersion)return;lastVersion=version;
+    // Links only count as routes when they clearly beat the decoy (shifted-clock) rate.
+    const expected=R.chance(sightings,{}),significant=found.length>=Math.max(2,expected*2+1);
     const headed=sightings.filter(s=>s.heading!=null).length,described=sightings.filter(s=>s.colour).length;
-    SmoothUI.list($('route-totals'),[['ROUTES',found.length],['SIGHTINGS',sightings.length],['WITH HEADING',sightings.length?Math.round(headed/sightings.length*100)+'%':'—'],['CAMERAS',new Set(rows.map(r=>r.cameraId)).size]].map(([label,value])=>{const cell=node('div');cell.dataset.key=label;cell.append(node('strong',String(value)),node('span',label));return cell;}));
+    SmoothUI.list($('route-totals'),[['LINKS',found.length],['BY CHANCE',expected.toFixed(1)],['WITH HEADING',sightings.length?Math.round(headed/sightings.length*100)+'%':'—'],['CAMERAS',new Set(rows.map(r=>r.cameraId)).size]].map(([label,value])=>{const cell=node('div');cell.dataset.key=label;cell.append(node('strong',String(value)),node('span',label));return cell;}));
     if(routeMap){
       cameraLayer.clearLayers();flowLayer.clearLayers();routeLayer.clearLayers();
       const points=[];
@@ -65,7 +67,7 @@
       if($('route-flows').checked)for(const f of flows){
         for(const [part,colour]of [[f.dominant,'#88e2f2'],[f.secondary,'#5d8fa0']]){if(!part||part.share<.15)continue;for(const layer of arrow(f.lat,f.lon,part.bearing,1.2+part.share*2.5,colour,2+Math.min(5,f.headed*part.share/2)))layer.bindTooltip(`${f.camera.name||f.cameraId}: ${Math.round(part.share*100)}% heading ${part.direction} (${f.headed} vehicles with heading)`).addTo(flowLayer);}
       }
-      found.forEach((route,i)=>{
+      if(significant||$('route-candidates').open)found.forEach((route,i)=>{
         const age=Math.min(1,(end-route.end)/windowMs),active=selectedRoute===route.id,colour=active?'#ffd36b':`hsl(${95-age*60},70%,${65-age*25}%)`;
         const line=L.polyline(route.hops.map(h=>[h.lat,h.lon]),{color:colour,weight:active?6:3,opacity:active?1:.85-age*.4,dashArray:route.confidence<.35?'6 6':null}).addTo(routeLayer);
         line.bindTooltip(`Route ${i+1}: ${route.colour} ${route.label} heading ${route.heading} · ${time(route.start)}–${time(route.end)}`);line.on('click',()=>{selectedRoute=active?null:route.id;lastVersion='';render();});
@@ -87,12 +89,27 @@
       const hops=node('div',undefined,'route-hops');for(const h of route.hops){const hop=node('button',undefined,'route-hop');hop.type='button';hop.title=`Inspect ${h.camera.name||h.cameraId}`;hop.append(thumbnail(h),node('span',`${time(h.t)} · ${h.camera.name||h.cameraId}`));hop.onclick=()=>{selectCamera(h.cameraId);$('detail-pane').scrollIntoView({behavior:'smooth',block:'center'});};hops.append(hop);}
       item.append(button,hops);return item;
     });
-    SmoothUI.list($('route-list'),items.length?items:[Object.assign(node('li',sightings.length?'No confident cross-camera links in this window yet.':'No saved sightings for this corridor in the window.','widget-note'),{id:'no-routes'})]);
+    SmoothUI.list($('route-list'),items.length?items:[Object.assign(node('li',sightings.length?'No cross-camera links in this window.':'No saved sightings for this corridor in the window.','widget-note'),{id:'no-routes'})]);
+    $('route-verdict').textContent=!found.length?'':significant?`${found.length} links vs ~${expected.toFixed(1)} expected by chance: these routes are more than coincidence.`:`${found.length} candidate links, but ~${expected.toFixed(1)} would appear by chance with shifted clocks. At this sampling rate they are not distinguishable from coincidental colour matches.`;
+    $('route-verdict').classList.toggle('weak',!significant&&found.length>0);$('route-candidates').hidden=!found.length;
+    $('route-candidates-summary').textContent=significant?`Routes (${found.length})`:`Show ${found.length} candidate links anyway`;
+    if(significant)$('route-candidates').open=true;
+    renderSeries(sightings,end-windowMs,end);
     $('routes-status').textContent=`${rows.length} saved frames from ${new Set(rows.map(r=>r.cameraId)).size} cameras between ${time(end-windowMs)} and ${time(end)}. ${headed}/${sightings.length} vehicles have a compass heading; ${described}/${sightings.length} have a colour profile. ${!$('route-highway').value?'Choose a corridor so its cameras refresh together. ':''}${isLive()?'Live: new photos extend routes as they arrive.':'Showing routes before the timeline cursor.'}`;
     notifyPane('routes','Vehicle routes',[found.map(r=>r.id),flows.length],$('routes-updated'),$('routes-pane'));
   }
+  // Direction of travel through time: corridor headings per time bin, stacked by compass direction.
+  function renderSeries(sightings,start,end){
+    const series=R.flowSeries(sightings,start,end,24),max=Math.max(1,...series.map(b=>b.counts.N+b.counts.E+b.counts.S+b.counts.W)),colours={N:'#88e2f2',S:'#4f8fb0',E:'#ffd36b',W:'#c8913a'};
+    const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 240 60');svg.setAttribute('preserveAspectRatio','none');svg.setAttribute('role','img');
+    svg.setAttribute('aria-label','Vehicles by compass heading per time bin');
+    series.forEach((b,i)=>{let y=60;for(const d of ['N','E','S','W']){const h=b.counts[d]/max*56;if(!h)continue;y-=h;const r=document.createElementNS(svg.namespaceURI,'rect');for(const [k,v]of Object.entries({x:i*10+1,y,width:8,height:h,fill:colours[d]}))r.setAttribute(k,v);const t=document.createElementNS(svg.namespaceURI,'title');t.textContent=`${time(b.start)}–${time(b.end)}: ${b.counts[d]} heading ${d}`;r.append(t);svg.append(r);}});
+    const legend=node('div',undefined,'flow-legend');for(const [d,c]of Object.entries(colours)){const k=node('span',`${d}-bound ${series.reduce((n,b)=>n+b.counts[d],0)}`);k.style.setProperty('--swatch',c);legend.append(k);}
+    $('route-series').replaceChildren(svg,legend);
+  }
   function schedule(){clearTimeout(paintTimer);paintTimer=setTimeout(render,250);}
   for(const id of ['route-window','route-confidence','route-flows'])$(id).addEventListener('input',schedule);
+  $('route-candidates').addEventListener('toggle',()=>{lastVersion='';schedule();});
   $('route-highway').addEventListener('change',()=>{selectedRoute=null;limit=24;window.render?.();schedule();});
   setInterval(()=>{computeFeatures();if(archiveRevision!==lastRevision||!isLive()){lastRevision=archiveRevision;schedule();}},Math.max(1500,powerProfile.paintMs*10));
   window.renderRoutes=schedule;

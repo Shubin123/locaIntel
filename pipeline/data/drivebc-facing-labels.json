@@ -5688,6 +5688,2202 @@
 0.5548
 ],
 "group": "side"
+},
+{
+"file": "84-78a9a663c3f6.jpg",
+"camera": "84",
+"label": "car",
+"box": [
+0.2989,
+0.6534,
+0.4733,
+0.8109
+],
+"group": "side"
+},
+{
+"file": "13-f439cbf0427f.jpg",
+"camera": "13",
+"label": "car",
+"box": [
+0.4664,
+0.6412,
+0.562,
+0.7879
+],
+"group": "front"
+},
+{
+"file": "268-83c0515ecac9.jpg",
+"camera": "268",
+"label": "car",
+"box": [
+0.6137,
+0.5648,
+0.6478,
+0.6073
+],
+"group": "rear"
+},
+{
+"file": "13-f439cbf0427f.jpg",
+"camera": "13",
+"label": "truck",
+"box": [
+0.5332,
+0.7458,
+0.6725,
+0.9625
+],
+"group": "front"
+},
+{
+"file": "931-b692dd5a9096.jpg",
+"camera": "931",
+"label": "car",
+"box": [
+0.2442,
+0.2898,
+0.3399,
+0.3991
+],
+"group": "front"
+},
+{
+"file": "444-bdfb866f4412.jpg",
+"camera": "444",
+"label": "car",
+"box": [
+0.6175,
+0.4389,
+0.7081,
+0.5331
+],
+"group": "side"
+},
+{
+"file": "502-dc2a29f99be7.jpg",
+"camera": "502",
+"label": "car",
+"box": [
+0.5383,
+0.3833,
+0.5916,
+0.4403
+],
+"group": "front"
+},
+{
+"file": "31-f7ed2abd6a51.jpg",
+"camera": "31",
+"label": "car",
+"box": [
+0.7078,
+0.5226,
+0.7552,
+0.5776
+],
+"group": "rear"
+},
+{
+"file": "113-57aa47cf35a9.jpg",
+"camera": "113",
+"label": "car",
+"box": [
+0.2396,
+0.71,
+0.3231,
+0.8086
+],
+"group": "front"
+},
+{
+"file": "359-284d0aafe83f.jpg",
+"camera": "359",
+"label": "car",
+"box": [
+0.3948,
+0.536,
+0.45,
+0.6272
+],
+"group": "front"
+},
+{
+"file": "89-599f39731f9e.jpg",
+"camera": "89",
+"label": "truck",
+"box": [
+0.2707,
+0.3357,
+0.3631,
+0.5779
+],
+"group": "front"
+},
+{
+"file": "597-708b34fd08cf.jpg",
+"camera": "597",
+"label": "car",
+"box": [
+0.8732,
+0.0435,
+0.9501,
+0.1125
+],
+"group": "side"
+},
+{
+"file": "472-9dcb0893fdfb.jpg",
+"camera": "472",
+"label": "truck",
+"box": [
+0.6682,
+0.4355,
+0.877,
+0.5287
+],
+"group": "side"
+},
+{
+"file": "71-3d3610c55e7f.jpg",
+"camera": "71",
+"label": "car",
+"box": [
+0.5591,
+0.3928,
+0.5938,
+0.4351
+],
+"group": "front"
+},
+{
+"file": "683-7ea8ec82638c.jpg",
+"camera": "683",
+"label": "car",
+"box": [
+0.3467,
+0.5978,
+0.3774,
+0.6474
+],
+"group": "front"
+},
+{
+"file": "948-d93b4e52720b.jpg",
+"camera": "948",
+"label": "car",
+"box": [
+0.5109,
+0.6223,
+0.7745,
+0.9613
+],
+"group": "front"
+},
+{
+"file": "717-49aa7d678580.jpg",
+"camera": "717",
+"label": "car",
+"box": [
+0.5718,
+0.391,
+0.6406,
+0.4802
+],
+"group": "front"
+},
+{
+"file": "790-bf6e7cfb9d3a.jpg",
+"camera": "790",
+"label": "car",
+"box": [
+0.3499,
+0.5006,
+0.43,
+0.6275
+],
+"group": "front"
+},
+{
+"file": "322-d15250be5ed9.jpg",
+"camera": "322",
+"label": "car",
+"box": [
+0.2327,
+0.4101,
+0.273,
+0.456
+],
+"group": "side"
+},
+{
+"file": "1165-c14f4d939926.jpg",
+"camera": "1165",
+"label": "car",
+"box": [
+0.7424,
+0.8756,
+0.8649,
+0.9747
+],
+"group": "side"
+},
+{
+"file": "84-78a9a663c3f6.jpg",
+"camera": "84",
+"label": "car",
+"box": [
+0.2661,
+0.4853,
+0.3517,
+0.5565
+],
+"group": "side"
+},
+{
+"file": "239-865eab630544.jpg",
+"camera": "239",
+"label": "truck",
+"box": [
+0.4817,
+0.409,
+0.5499,
+0.4953
+],
+"group": "front"
+},
+{
+"file": "313-a5c0a3934987.jpg",
+"camera": "313",
+"label": "car",
+"box": [
+0.6948,
+0.4186,
+0.7356,
+0.4737
+],
+"group": "rear"
+},
+{
+"file": "113-57aa47cf35a9.jpg",
+"camera": "113",
+"label": "car",
+"box": [
+0.362,
+0.65,
+0.4299,
+0.7453
+],
+"group": "rear"
+},
+{
+"file": "1176-24192b687b49.jpg",
+"camera": "1176",
+"label": "car",
+"box": [
+0.4817,
+0.3066,
+0.5454,
+0.3534
+],
+"group": "side"
+},
+{
+"file": "363-e823b5ccfd07.jpg",
+"camera": "363",
+"label": "car",
+"box": [
+0.2856,
+0.3435,
+0.3403,
+0.4348
+],
+"group": "front"
+},
+{
+"file": "847-1c47cb242acb.jpg",
+"camera": "847",
+"label": "car",
+"box": [
+0.7073,
+0.5034,
+0.8591,
+0.6139
+],
+"group": "side"
+},
+{
+"file": "1022-74e8924f1b93.jpg",
+"camera": "1022",
+"label": "car",
+"box": [
+0.4028,
+0.395,
+0.4587,
+0.4312
+],
+"group": "side"
+},
+{
+"file": "737-b8a57213330f.jpg",
+"camera": "737",
+"label": "car",
+"box": [
+0.2765,
+0.4488,
+0.4237,
+0.6037
+],
+"group": "front"
+},
+{
+"file": "344-08fe02572499.jpg",
+"camera": "344",
+"label": "car",
+"box": [
+0.6108,
+0.3755,
+0.6557,
+0.4224
+],
+"group": "rear"
+},
+{
+"file": "656-62bc8eab3905.jpg",
+"camera": "656",
+"label": "car",
+"box": [
+0.9148,
+0.4262,
+0.9776,
+0.484
+],
+"group": "side"
+},
+{
+"file": "957-74d9c4cbeed7.jpg",
+"camera": "957",
+"label": "car",
+"box": [
+0.3591,
+0.4255,
+0.4005,
+0.4765
+],
+"group": "front"
+},
+{
+"file": "20-ed44454dffcc.jpg",
+"camera": "20",
+"label": "car",
+"box": [
+0.1872,
+0.3553,
+0.3111,
+0.449
+],
+"group": "side"
+},
+{
+"file": "113-57aa47cf35a9.jpg",
+"camera": "113",
+"label": "car",
+"box": [
+0.5984,
+0.4248,
+0.6273,
+0.4757
+],
+"group": "front"
+},
+{
+"file": "1126-4deeb32b3c70.jpg",
+"camera": "1126",
+"label": "car",
+"box": [
+0.574,
+0.4647,
+0.6213,
+0.4998
+],
+"group": "side"
+},
+{
+"file": "852-f959971c7ea5.jpg",
+"camera": "852",
+"label": "car",
+"box": [
+0.4723,
+0.626,
+0.5612,
+0.7349
+],
+"group": "side"
+},
+{
+"file": "932-389d11e5a581.jpg",
+"camera": "932",
+"label": "car",
+"box": [
+0.297,
+0.4506,
+0.3522,
+0.5041
+],
+"group": "side"
+},
+{
+"file": "459-472ff09bd8d6.jpg",
+"camera": "459",
+"label": "car",
+"box": [
+0.6549,
+0.6064,
+0.8345,
+0.7846
+],
+"group": "front"
+},
+{
+"file": "567-e37fcc58c192.jpg",
+"camera": "567",
+"label": "car",
+"box": [
+0.4832,
+0.2224,
+0.5333,
+0.2952
+],
+"group": "front"
+},
+{
+"file": "552-aec781d8be67.jpg",
+"camera": "552",
+"label": "car",
+"box": [
+0.1454,
+0.4485,
+0.3219,
+0.5976
+],
+"group": "side"
+},
+{
+"file": "999-d54b1f19ca68.jpg",
+"camera": "999",
+"label": "car",
+"box": [
+0.4951,
+0.4866,
+0.5506,
+0.5701
+],
+"group": "rear"
+},
+{
+"file": "400-f4b5587a14ab.jpg",
+"camera": "400",
+"label": "car",
+"box": [
+0.4549,
+0.5394,
+0.5463,
+0.6473
+],
+"group": "rear"
+},
+{
+"file": "715-15619201ab5f.jpg",
+"camera": "715",
+"label": "car",
+"box": [
+0.5461,
+0.3701,
+0.6032,
+0.4158
+],
+"group": "side"
+},
+{
+"file": "436-b25f5511a195.jpg",
+"camera": "436",
+"label": "car",
+"box": [
+0.4891,
+0.4589,
+0.5346,
+0.5292
+],
+"group": "front"
+},
+{
+"file": "1124-dc6920650268.jpg",
+"camera": "1124",
+"label": "car",
+"box": [
+0.3144,
+0.5654,
+0.3512,
+0.6006
+],
+"group": "side"
+},
+{
+"file": "727-4dbad25ffbf2.jpg",
+"camera": "727",
+"label": "car",
+"box": [
+0.4131,
+0.5377,
+0.468,
+0.6089
+],
+"group": "front"
+},
+{
+"file": "435-42c86711a914.jpg",
+"camera": "435",
+"label": "car",
+"box": [
+0.4091,
+0.5609,
+0.4716,
+0.6578
+],
+"group": "front"
+},
+{
+"file": "300-0ed1e50e668b.jpg",
+"camera": "300",
+"label": "car",
+"box": [
+0.8488,
+0.3957,
+0.9195,
+0.4406
+],
+"group": "side"
+},
+{
+"file": "15-7c3affe55d68.jpg",
+"camera": "15",
+"label": "car",
+"box": [
+0.461,
+0.3525,
+0.5367,
+0.4453
+],
+"group": "front"
+},
+{
+"file": "737-b8a57213330f.jpg",
+"camera": "737",
+"label": "car",
+"box": [
+0.4318,
+0.4618,
+0.5687,
+0.5753
+],
+"group": "side"
+},
+{
+"file": "1065-de2a4f6f697a.jpg",
+"camera": "1065",
+"label": "car",
+"box": [
+0.2531,
+0.5221,
+0.359,
+0.6573
+],
+"group": "side"
+},
+{
+"file": "361-2c9184559b88.jpg",
+"camera": "361",
+"label": "car",
+"box": [
+0.3336,
+0.4524,
+0.4122,
+0.5384
+],
+"group": "side"
+},
+{
+"file": "728-6b7a72d46de9.jpg",
+"camera": "728",
+"label": "car",
+"box": [
+0.2315,
+0.4115,
+0.2847,
+0.4958
+],
+"group": "front"
+},
+{
+"file": "1174-2f96111bb3f5.jpg",
+"camera": "1174",
+"label": "car",
+"box": [
+0.7765,
+0.1724,
+0.8187,
+0.2088
+],
+"group": "side"
+},
+{
+"file": "6-524a7fd16214.jpg",
+"camera": "6",
+"label": "car",
+"box": [
+0.4313,
+0.4873,
+0.4979,
+0.5396
+],
+"group": "side"
+},
+{
+"file": "345-1bcab3ac431f.jpg",
+"camera": "345",
+"label": "car",
+"box": [
+0.2819,
+0.5746,
+0.3807,
+0.681
+],
+"group": "front"
+},
+{
+"file": "322-d15250be5ed9.jpg",
+"camera": "322",
+"label": "car",
+"box": [
+0.2879,
+0.442,
+0.3334,
+0.4939
+],
+"group": "front"
+},
+{
+"file": "643-305322550e90.jpg",
+"camera": "643",
+"label": "car",
+"box": [
+0.6122,
+0.3098,
+0.6752,
+0.3511
+],
+"group": "side"
+},
+{
+"file": "6-524a7fd16214.jpg",
+"camera": "6",
+"label": "car",
+"box": [
+0.1383,
+0.589,
+0.2529,
+0.6842
+],
+"group": "side"
+},
+{
+"file": "534-730d96ad99f2.jpg",
+"camera": "534",
+"label": "truck",
+"box": [
+0.3331,
+0.5424,
+0.4129,
+0.6946
+],
+"group": "front"
+},
+{
+"file": "554-71c1df067ccb.jpg",
+"camera": "554",
+"label": "car",
+"box": [
+0.5914,
+0.3582,
+0.7047,
+0.426
+],
+"group": "side"
+},
+{
+"file": "961-cb9393481b75.jpg",
+"camera": "961",
+"label": "car",
+"box": [
+0.5488,
+0.3905,
+0.6269,
+0.4879
+],
+"group": "rear"
+},
+{
+"file": "547-a5807b6fc244.jpg",
+"camera": "547",
+"label": "car",
+"box": [
+0.5725,
+0.2601,
+0.6201,
+0.2945
+],
+"group": "side"
+},
+{
+"file": "960-4ac7b3a42557.jpg",
+"camera": "960",
+"label": "car",
+"box": [
+0.4044,
+0.3826,
+0.485,
+0.4865
+],
+"group": "front"
+},
+{
+"file": "438-e6c51267651d.jpg",
+"camera": "438",
+"label": "car",
+"box": [
+0.6989,
+0.5665,
+0.8102,
+0.6502
+],
+"group": "side"
+},
+{
+"file": "360-2dec9a3acfaa.jpg",
+"camera": "360",
+"label": "car",
+"box": [
+0.2965,
+0.4376,
+0.3735,
+0.5237
+],
+"group": "front"
+},
+{
+"file": "210-6113d584c749.jpg",
+"camera": "210",
+"label": "truck",
+"box": [
+0.7948,
+0.4192,
+0.8771,
+0.5488
+],
+"group": "rear"
+},
+{
+"file": "1089-e385d651f7e4.jpg",
+"camera": "1089",
+"label": "car",
+"box": [
+0.552,
+0.3571,
+0.5887,
+0.4052
+],
+"group": "rear"
+},
+{
+"file": "684-99b28ce59235.jpg",
+"camera": "684",
+"label": "car",
+"box": [
+0.3046,
+0.7936,
+0.3604,
+0.8715
+],
+"group": "front"
+},
+{
+"file": "155-23190dd93bd7.jpg",
+"camera": "155",
+"label": "car",
+"box": [
+0.3512,
+0.4217,
+0.3951,
+0.4926
+],
+"group": "front"
+},
+{
+"file": "86-db4eac3bc619.jpg",
+"camera": "86",
+"label": "truck",
+"box": [
+0.2289,
+0.4908,
+0.3103,
+0.6058
+],
+"group": "front"
+},
+{
+"file": "509-69e51e0c734d.jpg",
+"camera": "509",
+"label": "car",
+"box": [
+0.383,
+0.4932,
+0.5201,
+0.6159
+],
+"group": "side"
+},
+{
+"file": "437-e39f5b8467ae.jpg",
+"camera": "437",
+"label": "car",
+"box": [
+0.4449,
+0.5145,
+0.4992,
+0.595
+],
+"group": "front"
+},
+{
+"file": "728-6b7a72d46de9.jpg",
+"camera": "728",
+"label": "car",
+"box": [
+0.4225,
+0.4738,
+0.4916,
+0.5662
+],
+"group": "front"
+},
+{
+"file": "700-479ead29f67a.jpg",
+"camera": "700",
+"label": "car",
+"box": [
+0.4496,
+0.6524,
+0.6983,
+0.9579
+],
+"group": "side"
+},
+{
+"file": "664-7d2273bec8be.jpg",
+"camera": "664",
+"label": "car",
+"box": [
+0.3184,
+0.501,
+0.3536,
+0.5619
+],
+"group": "front"
+},
+{
+"file": "350-ed2d33a0466b.jpg",
+"camera": "350",
+"label": "car",
+"box": [
+0.1094,
+0.5165,
+0.1978,
+0.5844
+],
+"group": "side"
+},
+{
+"file": "86-db4eac3bc619.jpg",
+"camera": "86",
+"label": "car",
+"box": [
+0.2246,
+0.4898,
+0.3098,
+0.6057
+],
+"group": "front"
+},
+{
+"file": "86-db4eac3bc619.jpg",
+"camera": "86",
+"label": "car",
+"box": [
+0.4912,
+0.6521,
+0.6425,
+0.8346
+],
+"group": "front"
+},
+{
+"file": "716-10cda86b5e6c.jpg",
+"camera": "716",
+"label": "car",
+"box": [
+0.3509,
+0.4135,
+0.4071,
+0.4858
+],
+"group": "front"
+},
+{
+"file": "786-eeaaa86b49b3.jpg",
+"camera": "786",
+"label": "truck",
+"box": [
+0.1323,
+0.3513,
+0.2909,
+0.4709
+],
+"group": "side"
+},
+{
+"file": "854-009f79c26fbc.jpg",
+"camera": "854",
+"label": "car",
+"box": [
+0.2249,
+0.2627,
+0.2502,
+0.2985
+],
+"group": "rear"
+},
+{
+"file": "33-1136fb246770.jpg",
+"camera": "33",
+"label": "car",
+"box": [
+0.7601,
+0.5566,
+0.8206,
+0.6032
+],
+"group": "side"
+},
+{
+"file": "437-e39f5b8467ae.jpg",
+"camera": "437",
+"label": "car",
+"box": [
+0.574,
+0.6865,
+0.672,
+0.8363
+],
+"group": "front"
+},
+{
+"file": "549-1d1f8ad68ca4.jpg",
+"camera": "549",
+"label": "car",
+"box": [
+0.142,
+0.5414,
+0.2845,
+0.6664
+],
+"group": "side"
+},
+{
+"file": "132-b44dcf841714.jpg",
+"camera": "132",
+"label": "car",
+"box": [
+0.8474,
+0.3679,
+0.9241,
+0.4063
+],
+"group": "side"
+},
+{
+"file": "521-7d0d6069f61c.jpg",
+"camera": "521",
+"label": "car",
+"box": [
+0.8121,
+0.5518,
+0.8868,
+0.6193
+],
+"group": "side"
+},
+{
+"file": "843-2934d8f0a491.jpg",
+"camera": "843",
+"label": "car",
+"box": [
+0.3937,
+0.4507,
+0.5145,
+0.5665
+],
+"group": "front"
+},
+{
+"file": "1038-d1de5347d5fb.jpg",
+"camera": "1038",
+"label": "car",
+"box": [
+0.1325,
+0.6034,
+0.2351,
+0.7193
+],
+"group": "front"
+},
+{
+"file": "374-28664ad16f76.jpg",
+"camera": "374",
+"label": "car",
+"box": [
+0.5925,
+0.7553,
+0.7362,
+0.9603
+],
+"group": "rear"
+},
+{
+"file": "528-a0349c730467.jpg",
+"camera": "528",
+"label": "truck",
+"box": [
+0.4881,
+0.603,
+0.6424,
+0.7321
+],
+"group": "side"
+},
+{
+"file": "1124-dc6920650268.jpg",
+"camera": "1124",
+"label": "car",
+"box": [
+0.2269,
+0.6027,
+0.2762,
+0.6462
+],
+"group": "side"
+},
+{
+"file": "582-5076b039deb2.jpg",
+"camera": "582",
+"label": "truck",
+"box": [
+0.2417,
+0.4052,
+0.4436,
+0.6264
+],
+"group": "side"
+},
+{
+"file": "644-1fcffbd65f65.jpg",
+"camera": "644",
+"label": "car",
+"box": [
+0.3136,
+0.6129,
+0.4257,
+0.7544
+],
+"group": "front"
+},
+{
+"file": "397-62003e0b6489.jpg",
+"camera": "397",
+"label": "car",
+"box": [
+0.4075,
+0.4578,
+0.4918,
+0.5393
+],
+"group": "front"
+},
+{
+"file": "608-43c86d082600.jpg",
+"camera": "608",
+"label": "car",
+"box": [
+0.7455,
+0.4167,
+0.8642,
+0.5418
+],
+"group": "side"
+},
+{
+"file": "480-72ad53a3d6dc.jpg",
+"camera": "480",
+"label": "car",
+"box": [
+0.577,
+0.4482,
+0.6285,
+0.496
+],
+"group": "side"
+},
+{
+"file": "1034-85da90b93940.jpg",
+"camera": "1034",
+"label": "car",
+"box": [
+0.4199,
+0.5476,
+0.5302,
+0.6841
+],
+"group": "front"
+},
+{
+"file": "555-5aea95c2d99c.jpg",
+"camera": "555",
+"label": "car",
+"box": [
+0.6066,
+0.6184,
+0.7731,
+0.803
+],
+"group": "front"
+},
+{
+"file": "960-4ac7b3a42557.jpg",
+"camera": "960",
+"label": "car",
+"box": [
+0.2102,
+0.3944,
+0.3042,
+0.4923
+],
+"group": "front"
+},
+{
+"file": "472-9dcb0893fdfb.jpg",
+"camera": "472",
+"label": "car",
+"box": [
+0.3089,
+0.4,
+0.4313,
+0.4626
+],
+"group": "side"
+},
+{
+"file": "618-649f7948e2e6.jpg",
+"camera": "618",
+"label": "car",
+"box": [
+0.3677,
+0.4475,
+0.4175,
+0.5122
+],
+"group": "front"
+},
+{
+"file": "210-6113d584c749.jpg",
+"camera": "210",
+"label": "car",
+"box": [
+0.5105,
+0.4903,
+0.5663,
+0.5449
+],
+"group": "front"
+},
+{
+"file": "210-6113d584c749.jpg",
+"camera": "210",
+"label": "car",
+"box": [
+0.0449,
+0.6543,
+0.1731,
+0.7858
+],
+"group": "front"
+},
+{
+"file": "1129-4333108ab843.jpg",
+"camera": "1129",
+"label": "car",
+"box": [
+0.0705,
+0.4682,
+0.1533,
+0.5512
+],
+"group": "side"
+},
+{
+"file": "364-53594a4ddc8e.jpg",
+"camera": "364",
+"label": "car",
+"box": [
+0.6572,
+0.2949,
+0.7127,
+0.3445
+],
+"group": "side"
+},
+{
+"file": "738-c76b6a24a924.jpg",
+"camera": "738",
+"label": "car",
+"box": [
+0.3787,
+0.4036,
+0.4774,
+0.4883
+],
+"group": "side"
+},
+{
+"file": "71-3d3610c55e7f.jpg",
+"camera": "71",
+"label": "bus",
+"box": [
+0.0979,
+0.4571,
+0.2949,
+0.6917
+],
+"group": "side"
+},
+{
+"file": "1153-0c99b7d1f102.jpg",
+"camera": "1153",
+"label": "car",
+"box": [
+0.7032,
+0.5348,
+0.7657,
+0.5954
+],
+"group": "side"
+},
+{
+"file": "621-6aa4e3790a7c.jpg",
+"camera": "621",
+"label": "car",
+"box": [
+0.8895,
+0.4877,
+0.9861,
+0.5736
+],
+"group": "side"
+},
+{
+"file": "1008-bfdd2acf16a1.jpg",
+"camera": "1008",
+"label": "car",
+"box": [
+0.2896,
+0.3659,
+0.3405,
+0.4495
+],
+"group": "front"
+},
+{
+"file": "400-f4b5587a14ab.jpg",
+"camera": "400",
+"label": "car",
+"box": [
+0.2332,
+0.5238,
+0.3672,
+0.6507
+],
+"group": "side"
+},
+{
+"file": "436-b25f5511a195.jpg",
+"camera": "436",
+"label": "truck",
+"box": [
+0.3198,
+0.4783,
+0.4043,
+0.6267
+],
+"group": "rear"
+},
+{
+"file": "509-69e51e0c734d.jpg",
+"camera": "509",
+"label": "car",
+"box": [
+0.5393,
+0.5797,
+0.6978,
+0.7758
+],
+"group": "front"
+},
+{
+"file": "83-90f873e7ad34.jpg",
+"camera": "83",
+"label": "car",
+"box": [
+0.7282,
+0.6467,
+0.8942,
+0.7674
+],
+"group": "side"
+},
+{
+"file": "472-9dcb0893fdfb.jpg",
+"camera": "472",
+"label": "car",
+"box": [
+0.7708,
+0.4294,
+0.8966,
+0.4917
+],
+"group": "side"
+},
+{
+"file": "959-e9a0264f2027.jpg",
+"camera": "959",
+"label": "car",
+"box": [
+0.191,
+0.5672,
+0.2761,
+0.6621
+],
+"group": "front"
+},
+{
+"file": "398-a37bfab104e6.jpg",
+"camera": "398",
+"label": "truck",
+"box": [
+0.0783,
+0.4297,
+0.2897,
+0.6163
+],
+"group": "side"
+},
+{
+"file": "550-bc187c326d1e.jpg",
+"camera": "550",
+"label": "car",
+"box": [
+0.4016,
+0.6347,
+0.5417,
+0.7436
+],
+"group": "side"
+},
+{
+"file": "737-b8a57213330f.jpg",
+"camera": "737",
+"label": "truck",
+"box": [
+0.1245,
+0.3916,
+0.2624,
+0.6127
+],
+"group": "front"
+},
+{
+"file": "535-cfce6b97b33b.jpg",
+"camera": "535",
+"label": "car",
+"box": [
+0.1824,
+0.5827,
+0.2437,
+0.6258
+],
+"group": "side"
+},
+{
+"file": "592-d4011ecf9e77.jpg",
+"camera": "592",
+"label": "car",
+"box": [
+0.0497,
+0.1822,
+0.1061,
+0.2219
+],
+"group": "side"
+},
+{
+"file": "85-e01bd9cbcd2b.jpg",
+"camera": "85",
+"label": "car",
+"box": [
+0.5024,
+0.344,
+0.5359,
+0.3801
+],
+"group": "side"
+},
+{
+"file": "31-f7ed2abd6a51.jpg",
+"camera": "31",
+"label": "car",
+"box": [
+0.3785,
+0.4325,
+0.4157,
+0.4807
+],
+"group": "front"
+},
+{
+"file": "459-472ff09bd8d6.jpg",
+"camera": "459",
+"label": "car",
+"box": [
+0.2911,
+0.4198,
+0.352,
+0.4906
+],
+"group": "rear"
+},
+{
+"file": "461-a5950d5587f3.jpg",
+"camera": "461",
+"label": "car",
+"box": [
+0.529,
+0.285,
+0.6279,
+0.4313
+],
+"group": "front"
+},
+{
+"file": "397-62003e0b6489.jpg",
+"camera": "397",
+"label": "car",
+"box": [
+0.8225,
+0.3262,
+0.8676,
+0.3654
+],
+"group": "side"
+},
+{
+"file": "1172-11529a57ddc0.jpg",
+"camera": "1172",
+"label": "car",
+"box": [
+0.4866,
+0.4793,
+0.5136,
+0.5148
+],
+"group": "front"
+},
+{
+"file": "981-cd7948e73546.jpg",
+"camera": "981",
+"label": "car",
+"box": [
+0.2517,
+0.6388,
+0.3136,
+0.712
+],
+"group": "side"
+},
+{
+"file": "927-17949efa2aba.jpg",
+"camera": "927",
+"label": "car",
+"box": [
+0.555,
+0.4385,
+0.628,
+0.5023
+],
+"group": "side"
+},
+{
+"file": "833-43434052b346.jpg",
+"camera": "833",
+"label": "car",
+"box": [
+0.6317,
+0.4852,
+0.7625,
+0.5806
+],
+"group": "side"
+},
+{
+"file": "178-e10d33ce9b2e.jpg",
+"camera": "178",
+"label": "truck",
+"box": [
+0.513,
+0.463,
+0.6414,
+0.714
+],
+"group": "front"
+},
+{
+"file": "32-5b842745e8d1.jpg",
+"camera": "32",
+"label": "truck",
+"box": [
+0.3561,
+0.4187,
+0.4422,
+0.5293
+],
+"group": "front"
+},
+{
+"file": "331-114d7609cea0.jpg",
+"camera": "331",
+"label": "truck",
+"box": [
+0.3634,
+0.4737,
+0.4502,
+0.6451
+],
+"group": "front"
+},
+{
+"file": "786-eeaaa86b49b3.jpg",
+"camera": "786",
+"label": "truck",
+"box": [
+0.3711,
+0.315,
+0.4645,
+0.3922
+],
+"group": "side"
+},
+{
+"file": "643-305322550e90.jpg",
+"camera": "643",
+"label": "car",
+"box": [
+0.5721,
+0.4579,
+0.6963,
+0.5827
+],
+"group": "front"
+},
+{
+"file": "903-5513336b222e.jpg",
+"camera": "903",
+"label": "car",
+"box": [
+0.747,
+0.2475,
+0.825,
+0.2992
+],
+"group": "side"
+},
+{
+"file": "804-d7a0cb1a495b.jpg",
+"camera": "804",
+"label": "car",
+"box": [
+0.3825,
+0.5421,
+0.4733,
+0.6464
+],
+"group": "rear"
+},
+{
+"file": "441-03447b94ce3e.jpg",
+"camera": "441",
+"label": "car",
+"box": [
+0.8299,
+0.2671,
+0.8811,
+0.3032
+],
+"group": "side"
+},
+{
+"file": "440-07749550d2a6.jpg",
+"camera": "440",
+"label": "car",
+"box": [
+0.1936,
+0.564,
+0.2919,
+0.6488
+],
+"group": "side"
+},
+{
+"file": "393-b96946631722.jpg",
+"camera": "393",
+"label": "car",
+"box": [
+0.3148,
+0.3676,
+0.3532,
+0.4097
+],
+"group": "front"
+},
+{
+"file": "305-7851420a05eb.jpg",
+"camera": "305",
+"label": "car",
+"box": [
+0.6299,
+0.589,
+0.721,
+0.741
+],
+"group": "rear"
+},
+{
+"file": "1128-3bcfdf1e1da7.jpg",
+"camera": "1128",
+"label": "car",
+"box": [
+0.7016,
+0.5457,
+0.7575,
+0.6043
+],
+"group": "side"
+},
+{
+"file": "20-ed44454dffcc.jpg",
+"camera": "20",
+"label": "car",
+"box": [
+0.4008,
+0.3239,
+0.4864,
+0.4132
+],
+"group": "side"
+},
+{
+"file": "441-03447b94ce3e.jpg",
+"camera": "441",
+"label": "truck",
+"box": [
+0.437,
+0.4834,
+0.7992,
+0.9109
+],
+"group": "side"
+},
+{
+"file": "1019-6a0f5996dcf8.jpg",
+"camera": "1019",
+"label": "car",
+"box": [
+0.3817,
+0.3787,
+0.4575,
+0.4845
+],
+"group": "front"
+},
+{
+"file": "854-009f79c26fbc.jpg",
+"camera": "854",
+"label": "car",
+"box": [
+0.8495,
+0.5327,
+0.9257,
+0.5871
+],
+"group": "side"
+},
+{
+"file": "1037-a1c7af8ba347.jpg",
+"camera": "1037",
+"label": "car",
+"box": [
+0.4153,
+0.5146,
+0.5,
+0.6338
+],
+"group": "front"
+},
+{
+"file": "359-284d0aafe83f.jpg",
+"camera": "359",
+"label": "truck",
+"box": [
+0.4034,
+0.3498,
+0.476,
+0.5129
+],
+"group": "rear"
+},
+{
+"file": "756-f82cb27f2d50.jpg",
+"camera": "756",
+"label": "car",
+"box": [
+0.23,
+0.3353,
+0.2746,
+0.3938
+],
+"group": "rear"
+},
+{
+"file": "363-e823b5ccfd07.jpg",
+"camera": "363",
+"label": "car",
+"box": [
+0.3196,
+0.4041,
+0.3897,
+0.5188
+],
+"group": "front"
+},
+{
+"file": "999-d54b1f19ca68.jpg",
+"camera": "999",
+"label": "truck",
+"box": [
+0.1809,
+0.6423,
+0.3226,
+0.8313
+],
+"group": "front"
+},
+{
+"file": "170-763c220c2899.jpg",
+"camera": "170",
+"label": "car",
+"box": [
+0.6611,
+0.4944,
+0.795,
+0.6652
+],
+"group": "rear"
+},
+{
+"file": "534-730d96ad99f2.jpg",
+"camera": "534",
+"label": "car",
+"box": [
+0.2786,
+0.4719,
+0.3285,
+0.5644
+],
+"group": "front"
+},
+{
+"file": "1038-d1de5347d5fb.jpg",
+"camera": "1038",
+"label": "car",
+"box": [
+0.3166,
+0.6382,
+0.4033,
+0.7665
+],
+"group": "front"
+},
+{
+"file": "959-e9a0264f2027.jpg",
+"camera": "959",
+"label": "car",
+"box": [
+0.4253,
+0.561,
+0.4721,
+0.6171
+],
+"group": "front"
+},
+{
+"file": "498-6b7e18c34300.jpg",
+"camera": "498",
+"label": "car",
+"box": [
+0.0394,
+0.5444,
+0.1423,
+0.6347
+],
+"group": "side"
+},
+{
+"file": "1165-c14f4d939926.jpg",
+"camera": "1165",
+"label": "truck",
+"box": [
+0.7011,
+0.524,
+0.7851,
+0.6629
+],
+"group": "rear"
+},
+{
+"file": "1162-026ca0d9945a.jpg",
+"camera": "1162",
+"label": "car",
+"box": [
+0.3527,
+0.7726,
+0.6107,
+0.9619
+],
+"group": "side"
+},
+{
+"file": "440-07749550d2a6.jpg",
+"camera": "440",
+"label": "car",
+"box": [
+0.6756,
+0.5744,
+0.734,
+0.6801
+],
+"group": "rear"
+},
+{
+"file": "288-e373b33180fa.jpg",
+"camera": "288",
+"label": "car",
+"box": [
+0.1134,
+0.4715,
+0.1617,
+0.5143
+],
+"group": "side"
+},
+{
+"file": "345-1bcab3ac431f.jpg",
+"camera": "345",
+"label": "car",
+"box": [
+0.6699,
+0.4208,
+0.7493,
+0.4761
+],
+"group": "side"
+},
+{
+"file": "397-62003e0b6489.jpg",
+"camera": "397",
+"label": "car",
+"box": [
+0.7004,
+0.3035,
+0.761,
+0.34
+],
+"group": "side"
+},
+{
+"file": "360-2dec9a3acfaa.jpg",
+"camera": "360",
+"label": "car",
+"box": [
+0.4429,
+0.3392,
+0.4862,
+0.4049
+],
+"group": "front"
+},
+{
+"file": "359-284d0aafe83f.jpg",
+"camera": "359",
+"label": "car",
+"box": [
+0.8378,
+0.4502,
+0.942,
+0.5297
+],
+"group": "side"
+},
+{
+"file": "223-062c89e514fe.jpg",
+"camera": "223",
+"label": "car",
+"box": [
+0.8104,
+0.5663,
+0.857,
+0.6281
+],
+"group": "side"
+},
+{
+"file": "1107-1a0927bf29b3.jpg",
+"camera": "1107",
+"label": "truck",
+"box": [
+0.5246,
+0.525,
+0.7135,
+0.7984
+],
+"group": "front"
+},
+{
+"file": "792-2b4d4d8b4878.jpg",
+"camera": "792",
+"label": "car",
+"box": [
+0.3203,
+0.5278,
+0.4058,
+0.6172
+],
+"group": "front"
+},
+{
+"file": "344-08fe02572499.jpg",
+"camera": "344",
+"label": "car",
+"box": [
+0.7339,
+0.6135,
+0.9206,
+0.8176
+],
+"group": "rear"
+},
+{
+"file": "684-99b28ce59235.jpg",
+"camera": "684",
+"label": "car",
+"box": [
+0.3735,
+0.7289,
+0.4135,
+0.7908
+],
+"group": "front"
+},
+{
+"file": "318-6e8895743c83.jpg",
+"camera": "318",
+"label": "car",
+"box": [
+0.6942,
+0.2594,
+0.7861,
+0.3343
+],
+"group": "side"
+},
+{
+"file": "403-b8e7f808c031.jpg",
+"camera": "403",
+"label": "car",
+"box": [
+0.455,
+0.3227,
+0.5711,
+0.4203
+],
+"group": "side"
+},
+{
+"file": "820-1e114ad9b26e.jpg",
+"camera": "820",
+"label": "car",
+"box": [
+0.7583,
+0.2711,
+0.8197,
+0.32
+],
+"group": "side"
+},
+{
+"file": "437-e39f5b8467ae.jpg",
+"camera": "437",
+"label": "car",
+"box": [
+0.5202,
+0.6199,
+0.5846,
+0.711
+],
+"group": "front"
+},
+{
+"file": "1129-4333108ab843.jpg",
+"camera": "1129",
+"label": "car",
+"box": [
+0.8742,
+0.3671,
+0.9359,
+0.4063
+],
+"group": "side"
+},
+{
+"file": "700-479ead29f67a.jpg",
+"camera": "700",
+"label": "car",
+"box": [
+0.5248,
+0.5875,
+0.6712,
+0.7587
+],
+"group": "side"
+},
+{
+"file": "646-c1fc8f7fbe20.jpg",
+"camera": "646",
+"label": "bus",
+"box": [
+0.0932,
+0.7171,
+0.3517,
+0.9671
+],
+"group": "side"
+},
+{
+"file": "87-d43604f29d81.jpg",
+"camera": "87",
+"label": "car",
+"box": [
+0.8952,
+0.5786,
+0.9716,
+0.634
+],
+"group": "side"
+},
+{
+"file": "197-9892d4d678ac.jpg",
+"camera": "197",
+"label": "car",
+"box": [
+0.377,
+0.5632,
+0.5124,
+0.7064
+],
+"group": "rear"
+},
+{
+"file": "619-c0c88bf998d8.jpg",
+"camera": "619",
+"label": "car",
+"box": [
+0.0196,
+0.4693,
+0.076,
+0.5201
+],
+"group": "side"
+},
+{
+"file": "1011-af97b85a708c.jpg",
+"camera": "1011",
+"label": "car",
+"box": [
+0.0182,
+0.5245,
+0.1869,
+0.6574
+],
+"group": "side"
+},
+{
+"file": "618-649f7948e2e6.jpg",
+"camera": "618",
+"label": "car",
+"box": [
+0.3918,
+0.5001,
+0.443,
+0.5687
+],
+"group": "front"
+},
+{
+"file": "461-a5950d5587f3.jpg",
+"camera": "461",
+"label": "car",
+"box": [
+0.1904,
+0.4303,
+0.3788,
+0.6645
+],
+"group": "front"
 }
 ]
 }

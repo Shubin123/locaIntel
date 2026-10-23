@@ -36,3 +36,12 @@ test('flows summarise compass headings per camera and colours are named',()=>{
   assert.equal(R.colourName(white),'white');assert.equal(R.colourName(red),'red');
   const px=new Uint8ClampedArray([250,250,250,255,10,10,10,255]);assert.equal(R.describePixels(px).length,13);
 });
+test('low-confidence facing gives no heading, so it cannot steer a route',()=>{
+  const r=row(cams[0],0,[{facing:'away_from_camera',colour:red}]);r.facing.byDetection[0].tier='low';
+  assert.equal(R.sightings([r])[0].heading,null);r.facing.byDetection[0].tier='medium';assert.equal(R.sightings([r])[0].heading,90);
+});
+test('decoy clock shifts estimate chance links and flow series bins headings through time',()=>{
+  const rows=[row(cams[0],0,[{facing:'away_from_camera',colour:red}]),row(cams[1],240000,[{facing:'away_from_camera',colour:red}]),row(cams[2],480000,[{facing:'toward_camera',colour:red}])];
+  const list=R.sightings(rows);assert.equal(R.routes(list).length,1);const c=R.chance(list);assert.ok(c>=0&&c<=1,'chance is the mean decoy route count');
+  const series=R.flowSeries(list,0,600000,3);assert.equal(series.length,3);assert.equal(series.reduce((n,b)=>n+b.counts.E,0),3);assert.equal(series[0].vehicles,1);
+});

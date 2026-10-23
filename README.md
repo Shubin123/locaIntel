@@ -165,21 +165,23 @@ The **Vehicle facing** widget gives every detected car, truck and bus at least 8
 
 The old model was trained only on street-level CFV car photos and got just **50–53%** of front/rear/side right on elevated DriveBC views. The new model (`models/drivebc-facing-v3.onnx`, MobileNetV3, ~16 MiB) is adapted to DriveBC:
 
-1. 474 hand-labeled DriveBC crops from 241 cameras (`pipeline/data/drivebc-facing-labels.json`, visible side only; unclear crops were left out).
-2. A frozen DINOv2-base + linear teacher (81% held-out) soft-labels 3,428 unlabeled DriveBC crops.
+1. 657 hand-labeled DriveBC crops from 342 cameras (`pipeline/data/drivebc-facing-labels.json`, visible side only; unclear crops were left out).
+2. A frozen DINOv2-base + linear teacher (79% held-out) soft-labels 3,245 unlabeled DriveBC crops.
 3. The student trains on CFV (8 views + angle), the hand labels and the pseudo-labels together.
 
-Camera-grouped 5-fold cross-validation (no camera in both train and test; the teacher for each fold sees only that fold's training labels):
+Camera-grouped 5-fold cross-validation (no camera in both train and test; each fold's teacher sees only that fold's training labels):
 
 | | Front/rear/side accuracy |
 | --- | --- |
 | Previous CFV model | 50% |
-| DriveBC-adapted student (all vehicles) | **74%** |
-| High tier (36% of vehicles) | 90% |
-| Medium tier (40%) | 71% |
-| Low tier (24%) | 55% |
+| DriveBC-adapted student (all vehicles) | **75%** |
+| High tier (53% of vehicles) | 90% |
+| Medium tier (31%) | 64% |
+| Low tier (16%) | 44% |
 
-The tier thresholds are chosen on held-out predictions, so treat low-confidence results as guesses. The crop and its mirror run as one batch-2 WebGPU dispatch (~4 ms per vehicle on the test Mac; WASM fallback). Clipped crops and paired lamps that contradict the model lower the tier by one step. Facing describes appearance, not measured movement.
+Going from 474 to 657 labels kept overall accuracy about level (74% → 75%) but moved more vehicles into the 90%-accurate high tier (36% → 53%). Labeling more crops is the most direct way to improve further. DINOv2-large did not make a better teacher (78% vs 79–81%).
+
+The tier thresholds are chosen on held-out predictions, so treat low-confidence results as guesses. The crop and its mirror run as one batch-2 WebGPU dispatch (~4 ms per vehicle on the test Mac; WASM fallback). Clipped crops and paired lamps that contradict the model lower the tier by one step. Low-tier facings never steer route links or spatial headings. Facing describes appearance, not measured movement.
 
 Grow the dataset and re-measure:
 
@@ -192,13 +194,14 @@ python -m pipeline.train_drivebc_facing --final --distill && python -m pipeline.
 
 ### Vehicle routes through time
 
-The **Vehicle routes** widget links sightings of the same vehicle across cameras. Each vehicle's facing plus the camera's look direction (catalog `orientation`, or "looking north" in the caption) gives a compass heading. A sighting is linked to one at the next camera along that heading when:
+The **Vehicle routes** widget turns each vehicle's facing plus the camera's look direction into a compass heading. The look direction comes from the published catalog `orientation`, or "looking north" in the caption. It shows two things:
 
-- the colour profile and vehicle class agree;
-- the implied speed is 20–140 km/h within 45 minutes;
-- the link is mutual-best, with no near-equal rival.
+- **Direction of travel through time.** A per-corridor chart of N/E/S/W-bound vehicles per time bin, plus flow arrows on the map. This uses facing alone (medium/high tiers), so it works on every sampled camera.
+- **Cross-camera links.** A sighting is linked to one at one of the next two sampled cameras along its heading when: the colour profile and class agree; both ends have a heading; and the implied speed is 35–130 km/h. Speed uses upstream capture time from DriveBC's `Expires` header (capture + 1 s), not fetch time. The link must also be mutual-best with no near-equal rival. White, black and grey vehicles need a closer colour match and never rate "high".
 
-Chains of links form routes drawn on the map, coloured by recency, with crop thumbnails for each hop. Flow arrows show each camera's dominant compass headings. Choose a **Corridor** (a highway) so its cameras refresh together; the window follows the shared timeline cursor. These are appearance-based guesses, not plate reads. Common white, black and grey vehicles are weak evidence, so dashed lines mark low-confidence links.
+Every refresh, the widget runs a **decoy test**: it repeats the linking with each camera's clock shifted by ±10–20 minutes, so true vehicles no longer line up. Routes are only presented as routes when real links clearly outnumber decoy links; otherwise they are listed as candidates "not distinguishable from chance".
+
+Measured on Hwy 1 in the Lower Mainland (98 cameras, 40 rounds at 45 s, `python -m pipeline.route_survey` then `DECOYS=20 node scripts/route-survey.cjs .cache/route-survey/1.jsonl`): most cameras refresh only every ~10 minutes, and the same vehicle is rarely photographed at two cameras. Over 357 frames and 1,633 sightings (74% with a heading), the linker found **17** links, while 30 decoy runs averaged **13.6** (range 7–21): not distinguishable from chance. Reliable route tracking needs cameras that refresh every few seconds. On DriveBC stills, the direction-of-travel series is the dependable "through time" signal.
 
 ### GPU acceleration and road-aligned direction
 

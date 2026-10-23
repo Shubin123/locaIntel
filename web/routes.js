@@ -58,6 +58,8 @@
 
   const size=d=>(d.box[2]-d.box[0])*(d.box[3]-d.box[1]);
   const labelsCompatible=(a,b)=>a===b||(a==='car'&&b==='truck')||(a==='truck'&&b==='car');
+  // Upstream capture time when known: fetch times can lag a photo by minutes.
+  const captured=row=>{const t=Date.parse(row.sourceModified||'');return Number.isFinite(t)&&t<=row.observedAt+60000?t:row.observedAt;};
   // Flatten saved frames into sightings that carry heading and colour.
   function sightings(rows){
     const out=[];
@@ -65,33 +67,40 @@
       const camera=row.camera||{};if(!Number.isFinite(camera.lat)||!Number.isFinite(camera.lon))continue;
       for(const [i,d]of (row.detections||[]).entries()){
         if(!['car','truck','bus','motorcycle'].includes(d.label))continue;
-        const o=row.facing?.byDetection?.[i],f=row.routeFeatures?.byDetection?.[i]||null,h=heading(camera,o);
-        out.push({key:row.key+':'+i,frame:row.key,hash:row.hash,index:i,cameraId:row.cameraId,camera,lat:camera.lat,lon:camera.lon,t:row.observedAt,label:d.label,box:d.box,area:size(d),heading:h,facing:o?.state==='estimated'?o.facing:null,confidence:o?.confidence??null,colour:f,colourName:colourName(f)});
+        // Low-tier facing (~55% held-out accuracy) is too weak to steer a link.
+        const o=row.facing?.byDetection?.[i],f=row.routeFeatures?.byDetection?.[i]||null,h=o?.tier==='low'?null:heading(camera,o);
+        out.push({key:row.key+':'+i,frame:row.key,hash:row.hash,index:i,cameraId:row.cameraId,camera,lat:camera.lat,lon:camera.lon,t:captured(row),label:d.label,box:d.box,area:size(d),heading:h,facing:o?.state==='estimated'?o.facing:null,confidence:o?.confidence??null,colour:f,colourName:colourName(f)});
       }
     }
     return out.sort((a,b)=>a.t-b.t);
   }
-  const defaults={minSpeed:20/3.6,maxSpeed:140/3.6,maxGap:45*60000,minDistance:400,maxDistance:60000,headingTolerance:60,minScore:.55,minMargin:.08};
+  // DriveBC stills refresh every few minutes, so colour coincidences are common:
+  // links stay short (next sampled cameras only), at legal-ish speeds, with a heading at both ends.
+  const defaults={minSpeed:35/3.6,maxSpeed:130/3.6,maxGap:30*60000,minDistance:400,maxDistance:25000,headingTolerance:60,minScore:.55,minMargin:.08,neighbours:2,neutralSimilarity:.8};
+  const NEUTRAL=new Set(['white','black','grey']);
   function geometry(cache,a,b){
     const key=a.cameraId+'>'+b.cameraId;let g=cache.get(key);if(!g){g={distance:distance(a,b),course:bearing(a,b)};cache.set(key,g);}return g;
   }
   function plausibility(a,b,opts,cache=new Map()){
     const {distance:d,course}=geometry(cache,a,b),dt=(b.t-a.t)/1000;if(d<opts.minDistance||d>opts.maxDistance||dt<=0||dt*1000>opts.maxGap)return null;
-    const speed=d/dt;if(speed<opts.minSpeed*.6||speed>opts.maxSpeed*1.25)return null;if(a.heading==null||diff(a.heading,course)>opts.headingTolerance)return null;
-    if(b.heading!=null&&diff(b.heading,course)>opts.headingTolerance+20)return null;
+    const speed=d/dt;if(speed<opts.minSpeed*.6||speed>opts.maxSpeed)return null;if(a.heading==null||diff(a.heading,course)>opts.headingTolerance)return null;
+    if(b.heading==null||diff(b.heading,course)>opts.headingTolerance+20)return null;
     const speedFit=speed<opts.minSpeed?speed/opts.minSpeed:speed>opts.maxSpeed?opts.maxSpeed/speed:1;
-    return {distance:d,seconds:dt,speed,course,fit:speedFit*(1-diff(a.heading,course)/180)*(b.heading==null?.85:1-diff(b.heading,course)/240)};
+    return {distance:d,seconds:dt,speed,course,fit:speedFit*(1-diff(a.heading,course)/180)*(1-diff(b.heading,course)/240)};
   }
   // Mutual-best, margin-checked links between consecutive sightings at different cameras.
   function link(list,options={}){
     const opts={...defaults,...options},forward=new Map(),cache=new Map();list=[...list].sort((a,b)=>a.t-b.t);
+    // The next few sampled cameras ahead of a heading; a vehicle cannot skip past others unseen.
+    const cameras=[...new Map(list.map(s=>[s.cameraId,s])).values()],ahead=new Map();
+    const nextCameras=(a,h)=>{const key=a.cameraId+':'+Math.round(h/45)%8;if(!ahead.has(key))ahead.set(key,new Set(cameras.filter(c=>c.cameraId!==a.cameraId).map(c=>({c,g:geometry(cache,a,c)})).filter(({g})=>g.distance>=opts.minDistance&&g.distance<=opts.maxDistance&&diff(g.course,h)<=45).sort((x,y)=>x.g.distance-y.g.distance).slice(0,opts.neighbours).map(({c})=>c.cameraId)));return ahead.get(key);};
     for(let i=0;i<list.length;i++){
-      const a=list[i];if(a.heading==null||!a.colour)continue;const scored=[];
+      const a=list[i];if(a.heading==null||!a.colour)continue;const scored=[],next=nextCameras(a,a.heading),neutral=NEUTRAL.has(colourName(a.colour));
       for(let j=i+1;j<list.length&&list[j].t-a.t<=opts.maxGap;j++){
-        const b=list[j];if(b.t<=a.t||b.cameraId===a.cameraId||!b.colour||!labelsCompatible(a.label,b.label))continue;
+        const b=list[j];if(b.t<=a.t||!next.has(b.cameraId)||!b.colour||!labelsCompatible(a.label,b.label))continue;
         const p=plausibility(a,b,opts,cache);if(!p)continue;
         const look=similarity(a.colour,b.colour),score=look*(.55+.45*p.fit);
-        if(look<.5)continue;scored.push({a,b,...p,similarity:look,score});
+        if(look<(neutral?opts.neutralSimilarity:.5))continue;scored.push({a,b,...p,similarity:look,score});
       }
       scored.sort((x,y)=>y.score-x.score);
       let best=scored[0];if(!best)continue;
@@ -101,6 +110,7 @@
       const rivals=scored.filter(c=>c!==best&&!along(best,c));
       best.margin=rivals[0]?best.score-rivals[0].score:best.score;
       best.confidence=Math.max(0,Math.min(1,(best.score-opts.minScore)/(1-opts.minScore)))*.6+Math.min(1,best.margin/.25)*.25+distinctiveness(a.colour)*.15;
+      if(neutral)best.confidence=Math.min(best.confidence,.55); // white/black/grey never reach "high"
       if(best.score>=opts.minScore&&best.margin>=opts.minMargin)forward.set(a.key,best);
     }
     const backward=new Map();for(const l of forward.values()){const prior=backward.get(l.b.key);if(!prior||prior.score<l.score)backward.set(l.b.key,l);}
@@ -118,6 +128,19 @@
     }
     return out.sort((a,b)=>b.end-a.end);
   }
+  // Decoy test: shift each camera's clock by ±10–20 min so true vehicles no longer
+  // line up; links that still appear are chance. Deterministic for stable UI.
+  function chance(list,options={},trials=6){
+    if(!list.length)return 0;let seed=7,total=0;const rand=()=>(seed=(seed*16807)%2147483647)/2147483647,ids=[...new Set(list.map(s=>s.cameraId))];
+    for(let k=0;k<trials;k++){const shift=new Map(ids.map(id=>[id,(rand()<.5?-1:1)*(10+rand()*10)*60000]));total+=routes(list.map(s=>({...s,t:s.t+shift.get(s.cameraId)})),options).length;}
+    return total/trials;
+  }
+  // Compass headings per time bin for a corridor: direction of travel through time.
+  function flowSeries(list,start,end,bins=24){
+    const width=Math.max(1,(end-start)/bins),out=Array.from({length:bins},(_,i)=>({start:start+i*width,end:start+(i+1)*width,counts:{N:0,E:0,S:0,W:0},vehicles:0}));
+    for(const s of list){if(s.t<start||s.t>end)continue;const bin=out[Math.min(bins-1,Math.floor((s.t-start)/width))];bin.vehicles++;if(s.heading!=null)bin.counts[['N','E','S','W'][Math.round(s.heading/90)%4]]++;}
+    return out;
+  }
   // Per-camera compass flow from facing alone, robust even when no route links.
   function flows(list){
     const cams=new Map();
@@ -128,5 +151,5 @@
     for(const c of cams.values()){const order=c.bins.map((n,i)=>[n,i]).sort((a,b)=>b[0]-a[0]);c.dominant=order[0][0]?{direction:NAMES[order[0][1]],bearing:order[0][1]*45,share:order[0][0]/c.headed}:null;c.secondary=order[1][0]?{direction:NAMES[order[1][1]],bearing:order[1][1]*45,share:order[1][0]/c.headed}:null;}
     return [...cams.values()];
   }
-  root.VehicleRoutes={VERSION,lookBearing,relativeHeading,heading,distance,bearing,describePixels,describe,colourName,similarity,sightings,link,routes,flows,compassName};
+  root.VehicleRoutes={VERSION,lookBearing,relativeHeading,heading,distance,bearing,describePixels,describe,colourName,similarity,sightings,link,routes,chance,flowSeries,flows,compassName};
 })(globalThis);
