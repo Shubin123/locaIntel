@@ -1,6 +1,6 @@
 /* Vehicle routes widget. Reads the shared local archive and timeline from app.js. */
 (function(){
-  const R=VehicleRoutes;let routeMap=null,routeLayer=null,flowLayer=null,cameraLayer=null,selectedRoute=null,lastVersion='',featureRunning=false,paintTimer=null,lastRevision=-1;
+  const R=VehicleRoutes;let routeMap=null,routeLayer=null,flowLayer=null,cameraLayer=null,trackLayer=null,selectedRoute=null,lastVersion='',featureRunning=false,paintTimer=null,lastRevision=-1;
   const thumbs=new Map();
   const confidenceLabel=c=>c>=.6?'high':c>=.35?'medium':'low';
   const time=t=>new Date(t).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
@@ -14,6 +14,12 @@
         const blob=await photoArchive.photo(row.hash);if(!blob)continue;
         const features=await R.describe(blob,row.detections);
         await photoArchive.saveRouteFeatures(row.key,{version:R.VERSION,byDetection:Object.fromEntries(features.map((f,i)=>[i,f]))});
+      }
+      // Appearance patches for same-camera tracks, in the format temporal analysis already saves.
+      const untracked=[...archiveMetadata.values()].filter(r=>SpatialHeading.frameDetections(r).length&&!PairedFacing.validFeatures(r)).sort((a,b)=>b.observedAt-a.observedAt);
+      for(const row of untracked.slice(0,4)){
+        const blob=await photoArchive.photo(row.hash);if(!blob)continue;const ds=SpatialHeading.frameDetections(row);
+        await photoArchive.saveFeatures(row.key,{...await TemporalTraffic.features(blob,ds),version:1,hash:row.hash,detectionSignature:SpatialHeading.detectionSignature(ds)});
       }
     }catch(error){console.warn('Route features unavailable',error);}
     finally{featureRunning=false;}
@@ -32,7 +38,7 @@
     if(routeMap||!window.L)return;
     routeMap=L.map('routes-map',{scrollWheelZoom:false}).setView([49.6,-122.5],7);
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'}).addTo(routeMap);
-    cameraLayer=L.layerGroup().addTo(routeMap);flowLayer=L.layerGroup().addTo(routeMap);routeLayer=L.layerGroup().addTo(routeMap);
+    cameraLayer=L.layerGroup().addTo(routeMap);flowLayer=L.layerGroup().addTo(routeMap);trackLayer=L.layerGroup().addTo(routeMap);routeLayer=L.layerGroup().addTo(routeMap);
   }
   // Short arrow from a camera toward a compass bearing; length grows with vehicle share.
   function arrow(lat,lon,bearing,km,colour,weight){
@@ -54,7 +60,7 @@
     const rows=[...archiveMetadata.values()].filter(r=>r.observedAt<=end&&r.observedAt>=end-windowMs&&r.detections&&inCorridor(r.camera||byId.get(r.cameraId)));
     const sightings=R.sightings(rows.map(r=>({...r,camera:{...byId.get(r.cameraId),...Object.fromEntries(Object.entries(r.camera||{}).filter(([,v])=>v!=null))}})));
     const found=R.routes(sightings).filter(r=>r.confidence>=minConfidence),flows=R.flows(sightings);
-    const version=signature([end-end%30000,windowMs,minConfidence,$('route-highway').value,$('route-flows').checked,selectedRoute,$('route-candidates').open,sightings.length,found.map(r=>[r.id,r.hops.length]),flows.map(f=>[f.cameraId,f.bins])]);
+    const version=signature([end-end%30000,windowMs,minConfidence,$('route-highway').value,$('route-flows').checked,selectedRoute,$('route-candidates').open,sightings.length,rows.filter(r=>r.features).length,found.map(r=>[r.id,r.hops.length]),flows.map(f=>[f.cameraId,f.bins])]);
     if(version===lastVersion)return;lastVersion=version;
     // Links only count as routes when they clearly beat the decoy (shifted-clock) rate.
     const expected=R.chance(sightings,{}),significant=found.length>=Math.max(2,expected*2+1);
@@ -95,6 +101,7 @@
     $('route-candidates-summary').textContent=significant?`Routes (${found.length})`:`Show ${found.length} candidate links anyway`;
     if(significant)$('route-candidates').open=true;
     renderSeries(sightings,end-windowMs,end);
+    renderTracks(rows.map(r=>({...r,camera:{...byId.get(r.cameraId),...Object.fromEntries(Object.entries(r.camera||{}).filter(([,v])=>v!=null))}})));
     $('routes-status').textContent=`${rows.length} saved frames from ${new Set(rows.map(r=>r.cameraId)).size} cameras between ${time(end-windowMs)} and ${time(end)}. ${headed}/${sightings.length} vehicles have a compass heading; ${described}/${sightings.length} have a colour profile. ${!$('route-highway').value?'Choose a corridor so its cameras refresh together. ':''}${isLive()?'Live: new photos extend routes as they arrive.':'Showing routes before the timeline cursor.'}`;
     notifyPane('routes','Vehicle routes',[found.map(r=>r.id),flows.length],$('routes-updated'),$('routes-pane'));
   }
@@ -106,6 +113,24 @@
     series.forEach((b,i)=>{let y=60;for(const d of ['N','E','S','W']){const h=b.counts[d]/max*56;if(!h)continue;y-=h;const r=document.createElementNS(svg.namespaceURI,'rect');for(const [k,v]of Object.entries({x:i*10+1,y,width:8,height:h,fill:colours[d]}))r.setAttribute(k,v);const t=document.createElementNS(svg.namespaceURI,'title');t.textContent=`${time(b.start)}–${time(b.end)}: ${b.counts[d]} heading ${d}`;r.append(t);svg.append(r);}});
     const legend=node('div',undefined,'flow-legend');for(const [d,c]of Object.entries(colours)){const k=node('span',`${d}-bound ${series.reduce((n,b)=>n+b.counts[d],0)}`);k.style.setProperty('--swatch',c);legend.append(k);}
     $('route-series').replaceChildren(svg,legend);
+  }
+  // Same-camera vehicle tracks, checked against a mirrored decoy.
+  function renderTracks(rows){
+    const found=R.tracks(rows),moving=found.filter(t=>t.state==='moving'),decoy=R.tracks(rows,{decoy:true}).filter(t=>t.state==='moving').length;
+    const stationary=found.length-moving.length,trusted=moving.length>=Math.max(2,decoy*2+1);
+    $('track-verdict').textContent=!found.length?'No vehicle has been seen in two consecutive frames of a camera yet. Queues, lineups and congestion show up first.':
+      `${moving.length} moving and ${stationary} waiting/parked vehicles tracked across frames · ${decoy} moving tracks in the mirrored decoy. ${trusted?'Moving tracks clearly beat chance.':moving.length?'Moving tracks are not yet clearly above chance; waiting vehicles are reliable.':''}`;
+    const items=[...moving,...found.filter(t=>t.state==='stationary')].slice(0,24).map(t=>{
+      const item=node('li',undefined,'route-item track-item');item.dataset.key=t.id;
+      const minutes=Math.max(1,Math.round(t.seconds/60)),title=`${t.camera.name||t.cameraId} · ${t.label} ${t.state==='moving'?'moving '+t.imageDirection+(t.heading?' · heading '+t.heading:''):'waiting / parked'}`;
+      const head=node('button',undefined,'route-summary');head.type='button';head.append(node('strong',title),node('span',`${t.hops.length} frames · ${minutes} min · ${time(t.start)}–${time(t.end)}`));
+      head.onclick=()=>{selectCamera(t.cameraId);$('detail-pane').scrollIntoView({behavior:'smooth',block:'center'});};
+      const hops=node('div',undefined,'route-hops');for(const h of t.hops){const hop=node('div',undefined,'route-hop');hop.title=new Date(h.t).toLocaleString();hop.append(thumbnail(h),node('span',time(h.t)));hops.append(hop);}
+      item.append(head,hops);return item;
+    });
+    SmoothUI.list($('track-list'),items);
+    if(routeMap){trackLayer.clearLayers();const per=new Map();for(const t of found){const c=t.camera;if(!Number.isFinite(c.lat))continue;const e=per.get(t.cameraId)||{c,moving:0,still:0};e[t.state==='moving'?'moving':'still']++;per.set(t.cameraId,e);}
+      for(const {c,moving,still}of per.values())L.circleMarker([c.lat,c.lon],{radius:4+Math.min(10,moving+still),color:'#c3a1ff',weight:2,fillOpacity:.25}).bindTooltip(`${c.name}: ${moving} moving, ${still} waiting/parked vehicle tracks`).addTo(trackLayer);}
   }
   function schedule(){clearTimeout(paintTimer);paintTimer=setTimeout(render,250);}
   for(const id of ['route-window','route-confidence','route-flows'])$(id).addEventListener('input',schedule);

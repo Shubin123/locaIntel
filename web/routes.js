@@ -76,7 +76,7 @@
   }
   // DriveBC stills refresh every few minutes, so colour coincidences are common:
   // links stay short (next sampled cameras only), at legal-ish speeds, with a heading at both ends.
-  const defaults={minSpeed:35/3.6,maxSpeed:130/3.6,maxGap:30*60000,minDistance:400,maxDistance:25000,headingTolerance:60,minScore:.55,minMargin:.08,neighbours:2,neutralSimilarity:.8};
+  const defaults={minSpeed:35/3.6,maxSpeed:130/3.6,maxGap:30*60000,minDistance:400,maxDistance:25000,headingTolerance:60,minScore:.55,minMargin:.08,neighbours:2,neutralSimilarity:.8,minSimilarity:.5};
   const NEUTRAL=new Set(['white','black','grey']);
   function geometry(cache,a,b){
     const key=a.cameraId+'>'+b.cameraId;let g=cache.get(key);if(!g){g={distance:distance(a,b),course:bearing(a,b)};cache.set(key,g);}return g;
@@ -100,7 +100,7 @@
         const b=list[j];if(b.t<=a.t||!next.has(b.cameraId)||!b.colour||!labelsCompatible(a.label,b.label))continue;
         const p=plausibility(a,b,opts,cache);if(!p)continue;
         const look=similarity(a.colour,b.colour),score=look*(.55+.45*p.fit);
-        if(look<(neutral?opts.neutralSimilarity:.5))continue;scored.push({a,b,...p,similarity:look,score});
+        if(look<(neutral?opts.neutralSimilarity:opts.minSimilarity))continue;scored.push({a,b,...p,similarity:look,score});
       }
       scored.sort((x,y)=>y.score-x.score);
       let best=scored[0];if(!best)continue;
@@ -141,6 +141,53 @@
     for(const s of list){if(s.t<start||s.t>end)continue;const bin=out[Math.min(bins-1,Math.floor((s.t-start)/width))];bin.vehicles++;if(s.heading!=null)bin.counts[['N','E','S','W'][Math.round(s.heading/90)%4]]++;}
     return out;
   }
+  // Same-camera tracks: the same vehicle across consecutive saved frames, matched by
+  // its 12×12 appearance patch, position and size (TemporalTraffic.matches) under a
+  // stable camera view. Queues, congestion and slow traffic stay in view for
+  // minutes, so these tracks are real even at DriveBC's refresh rate. With
+  // decoy:true frame B is mirrored left↔right, which breaks true matches but keeps
+  // position statistics; the decoy count estimates chance tracks.
+  const meanDifference=(a,b)=>{if(!Array.isArray(a)||!Array.isArray(b)||a.length!==b.length)return 1;let s=0,n=0;for(let i=0;i<a.length;i++)if(Number.isFinite(a[i])&&Number.isFinite(b[i])){s+=Math.abs(a[i]-b[i]);n++;}return n>=a.length*.4?s/n:1;};
+  const mirrorPatch=p=>p.length===432?p.map((_,i)=>{const c=i%3,x=Math.floor(i/3)%12,y=Math.floor(i/36);return p[(y*12+11-x)*3+c];}):p;
+  const mirrorFrame=f=>({...f,detections:f.detections.map(d=>({...d,box:[1-d.box[2],d.box[1],1-d.box[0],d.box[3]],appearance:Array.isArray(d.appearance)?mirrorPatch(d.appearance):d.appearance}))});
+  // Mutual-best matching for frames minutes apart: lighting drifts, so the error
+  // limit is looser than temporal motion's, but each match must be unique.
+  function trackMatches(a,b,{maxError=.08,maxMove=.12,margin=.015}={}){
+    const c=d=>[(d.box[0]+d.box[2])/2,(d.box[1]+d.box[3])/2],area=d=>(d.box[2]-d.box[0])*(d.box[3]-d.box[1]),ok=d=>Array.isArray(d.appearance)&&d.appearance.length>=108&&['car','truck','bus','motorcycle'].includes(d.label);
+    const pairs=[];
+    for(let j=0;j<b.detections.length;j++){const q=b.detections[j];if(!ok(q))continue;
+      for(let i=0;i<a.detections.length;i++){const p=a.detections[i];if(!ok(p)||!labelsCompatible(p.label,q.label)||p.appearance.length!==q.appearance.length)continue;
+        const [px,py]=c(p),[qx,qy]=c(q);if(Math.hypot(px-qx,py-qy)>maxMove||Math.abs(Math.log(area(p)/area(q)))>.5)continue;
+        pairs.push({i,j,e:meanDifference(p.appearance,q.appearance)});}}
+    const best=(key,id)=>pairs.filter(x=>x[key]===id).sort((x,y)=>x.e-y.e),result=new Map();
+    for(const x of pairs){if(x.e>maxError)continue;const fromA=best('i',x.i),fromB=best('j',x.j);
+      if(fromA[0]!==x||fromB[0]!==x)continue;if((fromA[1]&&fromA[1].e-x.e<margin)||(fromB[1]&&fromB[1].e-x.e<margin))continue;result.set(x.j,x.i);}
+    return result;
+  }
+  function tracks(rows,{maxGap=30*60000,decoy=false,matcher=trackMatches,match={}}={}){
+    if(typeof matcher!=='function')return [];
+    const ready=rows.filter(r=>r.features?.version===1&&r.features.hash===r.hash&&Array.isArray(r.features.detections)),cams=new Map(),out=[];
+    for(const r of ready){if(!cams.has(r.cameraId))cams.set(r.cameraId,[]);cams.get(r.cameraId).push(r);}
+    for(const list of cams.values()){
+      list.sort((a,b)=>captured(a)-captured(b));const open=new Map();
+      for(let i=1;i<list.length;i++){
+        const A=list[i-1],B=list[i],gap=captured(B)-captured(A);
+        if(gap<=0||gap>maxGap||A.features.pixelSignature===B.features.pixelSignature||meanDifference(A.features.background,B.features.background)>=.035)continue;
+        for(const [j,ia]of matcher(A.features,decoy?mirrorFrame(B.features):B.features,match)){
+          const hop=(row,k)=>{const d=row.features.detections[k],fp=JSON.stringify([d.label,d.box]),o=row.facing?.byFingerprint?.[fp]||Object.values(row.facing?.byDetection||{}).find(x=>x?.fingerprint===fp);return {key:row.key+':'+k,frame:row.key,hash:row.hash,index:k,cameraId:row.cameraId,camera:row.camera||{},t:captured(row),label:d.label,box:d.box,orientation:o?.state==='estimated'?o:null};};
+          let track=open.get(A.key+':'+ia);if(!track){track={hops:[hop(A,ia)]};out.push(track);}
+          track.hops.push(hop(B,j));open.set(B.key+':'+j,track);
+        }
+      }
+    }
+    return out.map(track=>{
+      const h=track.hops,c=x=>[(x.box[0]+x.box[2])/2,(x.box[1]+x.box[3])/2],first=c(h[0]),last=c(h.at(-1)),moved=Math.hypot(last[0]-first[0],last[1]-first[1]);
+      const o=h.map(x=>x.orientation).reverse().find(x=>x&&x.tier!=='low'),compass=o?heading(h[0].camera,o):null;
+      return {id:h[0].key,cameraId:h[0].cameraId,camera:h[0].camera,hops:h,start:h[0].t,end:h.at(-1).t,seconds:(h.at(-1).t-h[0].t)/1000,label:h[0].label,
+        moved,state:moved>=.02?'moving':'stationary',imageDirection:moved>=.02?['→','↘','↓','↙','←','↖','↑','↗'][Math.round(((Math.atan2(last[1]-first[1],last[0]-first[0])*180/Math.PI+360)%360)/45)%8]:null,
+        heading:compass==null?null:compassName(compass)};
+    }).sort((a,b)=>b.hops.length-a.hops.length||b.seconds-a.seconds);
+  }
   // Per-camera compass flow from facing alone, robust even when no route links.
   function flows(list){
     const cams=new Map();
@@ -151,5 +198,5 @@
     for(const c of cams.values()){const order=c.bins.map((n,i)=>[n,i]).sort((a,b)=>b[0]-a[0]);c.dominant=order[0][0]?{direction:NAMES[order[0][1]],bearing:order[0][1]*45,share:order[0][0]/c.headed}:null;c.secondary=order[1][0]?{direction:NAMES[order[1][1]],bearing:order[1][1]*45,share:order[1][0]/c.headed}:null;}
     return [...cams.values()];
   }
-  root.VehicleRoutes={VERSION,lookBearing,relativeHeading,heading,distance,bearing,describePixels,describe,colourName,similarity,sightings,link,routes,chance,flowSeries,flows,compassName};
+  root.VehicleRoutes={VERSION,lookBearing,relativeHeading,heading,distance,bearing,describePixels,describe,colourName,similarity,sightings,link,routes,chance,trackMatches,tracks,flowSeries,flows,compassName};
 })(globalThis);

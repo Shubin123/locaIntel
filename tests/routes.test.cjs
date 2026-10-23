@@ -1,5 +1,5 @@
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
-const context=vm.createContext({});vm.runInContext(fs.readFileSync('web/routes.js','utf8'),context);const R=context.VehicleRoutes;
+const context=vm.createContext({});vm.runInContext(fs.readFileSync('web/temporal.js','utf8'),context);vm.runInContext(fs.readFileSync('web/routes.js','utf8'),context);const R=context.VehicleRoutes;
 const red=[.5,0,0,0,0,0,0,0,.1,.1,.2,.1,.4],white=[0,0,0,0,0,0,0,0,0,0,.2,.8,1],blue=[0,0,0,0,0,.5,0,0,.1,.2,.1,.1,.5];
 // Three cameras ~5 km apart heading east along one road.
 const cams=[{id:'a',lat:49,lon:-122.6,orientation:'E'},{id:'b',lat:49,lon:-122.53,orientation:'E'},{id:'c',lat:49,lon:-122.46,orientation:'W'}];
@@ -44,4 +44,16 @@ test('decoy clock shifts estimate chance links and flow series bins headings thr
   const rows=[row(cams[0],0,[{facing:'away_from_camera',colour:red}]),row(cams[1],240000,[{facing:'away_from_camera',colour:red}]),row(cams[2],480000,[{facing:'toward_camera',colour:red}])];
   const list=R.sightings(rows);assert.equal(R.routes(list).length,1);const c=R.chance(list);assert.ok(c>=0&&c<=1,'chance is the mean decoy route count');
   const series=R.flowSeries(list,0,600000,3);assert.equal(series.length,3);assert.equal(series.reduce((n,b)=>n+b.counts.E,0),3);assert.equal(series[0].vehicles,1);
+});
+test('same-camera tracks chain a vehicle across consecutive frames; mirrored decoys and changed views do not',()=>{
+  const cam={id:'q',lat:49,lon:-123,orientation:'N'},patch=Array.from({length:432},(_,i)=>(i%36<18?.9:.1)),other=Array.from({length:432},(_,i)=>i%2?.2:.6);
+  const frame=(n,x,hash=String(n),background=Array(50).fill(.3))=>({key:'q:'+hash,hash,cameraId:'q',observedAt:n*120000,camera:cam,
+    facing:{byFingerprint:{[JSON.stringify(['car',[x,.5,x+.1,.6]])]:{state:'estimated',facing:'away_from_camera',tier:'high',fingerprint:JSON.stringify(['car',[x,.5,x+.1,.6]])}}},
+    features:{version:1,hash,pixelSignature:hash,background,detections:[{label:'car',box:[x,.5,x+.1,.6],appearance:patch},{label:'car',box:[.8,.1,.9,.2],appearance:other}]}});
+  const rows=[frame(0,.2),frame(1,.25),frame(2,.3)],found=R.tracks(rows);
+  const moving=found.find(t=>t.state==='moving');assert.equal(moving.hops.length,3);assert.equal(moving.imageDirection,'→');assert.equal(moving.heading,'N');assert.equal(moving.seconds,240);
+  assert.equal(found.find(t=>t.state==='stationary').hops.length,3,'the parked car persists too');
+  assert.equal(R.tracks(rows,{decoy:true}).filter(t=>t.state==='moving').length,0,'an asymmetric vehicle does not match its mirror image');
+  assert.equal(R.tracks([frame(0,.2),frame(1,.25,'1',Array(50).fill(.9))]).length,0,'a changed camera view breaks tracks');
+  assert.equal(R.tracks([frame(0,.2),frame(40,.25)]).length,0,'gaps over 30 minutes break tracks');
 });
