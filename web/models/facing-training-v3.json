@@ -1,0 +1,84 @@
+{
+  "version": "drivebc-facing-v3",
+  "file": "drivebc-facing-v3.onnx",
+  "bytes": 16852997,
+  "sha256": "0b5bc0720f3d5d2571f5427d3414f96cc3a476fd5cabdb2ea8678a410fab305d",
+  "model": "MobileNetV3-Large, CFV + DriveBC adapted",
+  "input": {
+    "size": 224,
+    "internal_size": 160,
+    "rescale": 0.00392156862745098
+  },
+  "views": [
+    "front",
+    "front_left",
+    "left_side",
+    "rear_left",
+    "rear",
+    "rear_right",
+    "right_side",
+    "front_right"
+  ],
+  "policy": {
+    "high": 0.95,
+    "medium": 0.7
+  },
+  "crossval": {
+    "labels": 474,
+    "cameras": 241,
+    "folds": 5,
+    "baseline_accuracy": 0.5021097046413502,
+    "adapted_accuracy": 0.7426160337552743,
+    "tiers": {
+      "high": {
+        "share": 0.36075949367088606,
+        "accuracy": 0.9005847953216374
+      },
+      "medium": {
+        "share": 0.3987341772151899,
+        "accuracy": 0.7142857142857143
+      },
+      "low": {
+        "share": 0.24050632911392406,
+        "accuracy": 0.5526315789473685
+      }
+    }
+  },
+  "labels": "pipeline/data/drivebc-facing-labels.json",
+  "limitations": "Visible side of the vehicle from one photo. Accuracy measured on hand-labeled DriveBC crops with camera-grouped cross-validation; facing is not measured motion.",
+  "checkpoint_sha256": "0fdf2fe121fdaad8a1592b137dcf51a7c0fcdf9940f63e252c5b7929df960fbc",
+  "curve": [
+    {
+      "min_confidence": 0,
+      "coverage": 1.0,
+      "accuracy": 0.7426160337552743
+    },
+    {
+      "min_confidence": 0.5,
+      "coverage": 0.959915611814346,
+      "accuracy": 0.756043956043956
+    },
+    {
+      "min_confidence": 0.6,
+      "coverage": 0.8755274261603375,
+      "accuracy": 0.7807228915662651
+    },
+    {
+      "min_confidence": 0.7,
+      "coverage": 0.759493670886076,
+      "accuracy": 0.8027777777777778
+    },
+    {
+      "min_confidence": 0.8,
+      "coverage": 0.6455696202531646,
+      "accuracy": 0.8431372549019608
+    },
+    {
+      "min_confidence": 0.9,
+      "coverage": 0.5042194092827004,
+      "accuracy": 0.8661087866108786
+    }
+  ],
+  "training_script": "https://github.com/Shubin123/locaIntel/blob/main/pipeline/train_drivebc_facing.py",
+  "dataset_source": "https://huggingface.co/datasets/fort-cyber/CFV-Dataset plus hand-labeled DriveBC crops (Open Government Licence \u2013 BC imagery)"
+}

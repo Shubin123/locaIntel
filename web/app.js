@@ -234,10 +234,13 @@ function pairContext(c){
   if(!pairedContexts.has(key)){if(pairedContexts.size>=128)pairedContexts.delete(pairedContexts.keys().next().value);pairedContexts.set(key,PairedFacing.context(row,[...archiveMetadata.values()]));}
   return pairedContexts.get(key);
 }
-function rawFacing(c,d){const saved=PairedFacing.baseFor(archiveMetadata.get(c.id+':'+c.hash),d),local=!c._archive?facingAnalyzer.get({cameraId:String(c.id),hash:c.hash},d):null;return saved?.state==='error'?local||saved:saved||local||null;}
+// v3 results are single-photo estimates with a confidence tier; the paired
+// screenshot confirmer only applies to archived results from the retired cascade.
+function savedFacing(row,d){const key=VehicleFacing.fingerprint(d),r=row?.facing?.byFingerprint?.[key]||Object.values(row?.facing?.byDetection||{}).find(r=>r?.fingerprint===key);return r?.version===VehicleFacing.VERSION?r:PairedFacing.baseFor(row,d);}
+function rawFacing(c,d){const saved=savedFacing(archiveMetadata.get(c.id+':'+c.hash),d),local=!c._archive?facingAnalyzer.get({cameraId:String(c.id),hash:c.hash},d):null;return saved?.state==='error'?local||saved:saved||local||null;}
 function withFacing(c){
   const context=pairContext(c);
-  return {...c,detections:(c.detections||[]).map(d=>{const o=PairedFacing.combine(rawFacing(c,d),d,context,pairedModel);return {...d,orientation:o?{...o,road_direction:RoadVision.direction(d,o)}:null};})};
+  return {...c,detections:(c.detections||[]).map(d=>{const raw=rawFacing(c,d),o=raw?.version===PairedFacing.BASE_VERSION?PairedFacing.combine(raw,d,context,pairedModel):raw;return {...d,orientation:o?{...o,road_direction:RoadVision.direction(d,o)}:null};})};
 }
 const pairCapture=new PairCapture({
   isPaused:()=>!isLive()||document.hidden||!$('facing-enabled').checked||!$('source-view').checked||localHistoryOnly,
@@ -246,7 +249,7 @@ const pairCapture=new PairCapture({
 });
 async function schedulePairedHistory(c){
   for(const candidate of pairContext(c).candidates){
-    const row=candidate.row,needed=[...new Set(candidate.matches.values())].filter(i=>!PairedFacing.baseFor(row,row.features.detections[i]));
+    const row=candidate.row,needed=[...new Set(candidate.matches.values())].filter(i=>!savedFacing(row,row.features.detections[i]));
     if(!needed.length||pairedHistoryLoads.has(row.key))continue;
     pairedHistoryLoads.set(row.key,true);
     try{const blob=await photoArchive.photo(row.hash);if(!blob||!isLive()||document.hidden)continue;const source={hash:row.hash,cameraId:String(row.cameraId),blob,width:row.features.width,height:row.features.height};for(const i of needed)facingAnalyzer.request(source,row.features.detections[i],i,200);}
@@ -272,7 +275,7 @@ function scheduleFacing(){
       const raw=rawFacing(c,d);
       if(raw?.state==='error'&&!facingAnalyzer.get(identity,d))facingAnalyzer.entries.set(facingAnalyzer.key(identity,d),raw);
       if(!raw||['queued','error'].includes(raw.state))facingAnalyzer.request(identity,d,i,c.id===selectedCamera&&i===(selectedVehicle??c.detections.findIndex(d=>d.label==='car'))?1000:(c.id===selectedCamera?100:0)+(d.on_road===true?30:d.on_road===false?0:10));
-      else if(['estimated','unknown'].includes(raw.state)&&row&&SpatialHeading.facing(row,d,i)?.version!==VehicleFacing.VERSION)persistFacing(identity,i,raw);
+      else if(raw.version===VehicleFacing.VERSION&&['estimated','unknown'].includes(raw.state)&&row&&SpatialHeading.facing(row,d,i)?.version!==VehicleFacing.VERSION)persistFacing(identity,i,raw);
     }
     persistPaired(c);schedulePairedHistory(c).catch(cacheFailure);
   }
@@ -390,7 +393,7 @@ function notifyPane(key, label, version, badge, pane, sourceTime) {
 function filteredCameras() {
   if (!data) return [];
   const search = $('search').value.toLowerCase();
-  return viewCameras().filter(c => (!$('region').value || c.region === $('region').value) &&
+  return viewCameras().filter(c => (!$('region').value || c.region === $('region').value) && (!$('route-highway').value || String(c.highway) === $('route-highway').value) &&
     `${c.name} ${c.highway} ${c.caption}`.toLowerCase().includes(search));
 }
 function age(c) {
@@ -571,11 +574,11 @@ function renderFeeds(rows) {
     const details=node('div',undefined,'details');details.dataset.key='details';const h=node('h3');h.append(link(c.name,c.source));details.append(h);
     const meta=node('div',undefined,'meta');meta.append(node('span',c.region),node('span',c._archive?(c._analysisAvailable?`${count(c)} saved vehicle detections`:'Analysis unavailable'):c.browser_analysis?`${count(c)} vehicles detected in source`:`${count(c)} vehicles in analyzed frame`));details.append(meta);
     const counts=node('div',undefined,'counts');for(const [label,n]of Object.entries(c.counts||{}))counts.append(node('span',`${n} ${label}`));if(!counts.childNodes.length)counts.append(node('span',c._archive&&!c._analysisAvailable?'No stored analysis':'No objects detected'));details.append(counts);
-    const facing=vehicles(c).filter(d=>d.orientation?.state==='estimated');details.append(node('div',`${facing.length} facing estimates · ${facing.filter(d=>d.orientation.facing==='toward_camera').length} toward / ${facing.filter(d=>d.orientation.facing==='away_from_camera').length} away from camera`,'facing-tag'));
-    const states=motionCounts([c]);details.append(node('div',`${c._archive?'Saved':'Frame'} motion: ${states.moving} moving · ${states.stationary} stationary · ${states.unknown} unknown`,'motion-tag'));
+    const facing=vehicles(c).filter(d=>d.orientation?.state==='estimated'),states=motionCounts([c]);
+    details.append(node('div',`Facing: ${facing.filter(d=>d.orientation.facing==='toward_camera').length} toward · ${facing.filter(d=>d.orientation.facing==='away_from_camera').length} away · ${facing.filter(d=>d.orientation.facing?.startsWith('image_')).length} side${states.moving||states.stationary?` · motion ${states.moving} moving / ${states.stationary} stationary`:''}`,'facing-tag'));
     const sources=node('div',undefined,'camera-sources');for(const [text,url]of[['DriveBC camera',c.source],['Original image',c.image]])if(url)sources.append(link(text+' ↗',url));details.append(sources);
-    details.append(node('div',sourceLabel(original),'source-status'),node('div',`${c._archive?'Saved observation':c.browser_analysis?'Local detection':'Analyzed frame'} ${age(c)}`,'age'));
-    const inspect=node('button','Inspect motion & heat','inspect-button');inspect.onclick=()=>{selectCamera(c.id);$('detail-pane').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'});};details.append(inspect,node('div','Hover or focus this card to play saved frames · up to 24 photos','source-status'),node('span',undefined,'update-badge'));
+    details.append(node('div',sourceLabel(original),'source-status'));
+    const inspect=node('button','Inspect','inspect-button');inspect.onclick=()=>{selectCamera(c.id);$('detail-pane').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'});};inspect.title='Hover or focus a card to replay its saved frames';details.append(inspect,node('span',undefined,'update-badge'));
     next.append(drawPicture(original),details);
     if(card)SmoothUI.patch(card,next);else card=next;
     installHoverPlayback(card,key);
@@ -602,6 +605,7 @@ function render() {
   renderFeeds(rows);renderMap(snapshots);renderTrend(rows);renderDetail();
   renderMotionEvidence(snapshots);
   notifyPane('controls', 'Network controls', [$('search').value, $('region').value, $('sort').value, $('boxes').checked, $('source-view').checked, [...$('region').options].map(o => o.value)], $('controls-updated'), $('controls-pane'));
+  window.renderRoutes?.();
   scheduleSources(); scheduleDetection();scheduleRoads();scheduleFacing();renderRoadStatus(snapshots);renderFacingStatus(snapshots);renderBrowserStatus();renderSummary();if(isLive())cachePublishedFrames();else loadHistoryPhotos();
 }
 function renderMotionEvidence(snapshots){
@@ -754,15 +758,15 @@ function renderTemporalLog(){
 try{$('facing-enabled').checked=localStorage.getItem('locaintel.facing')!=='off';}catch(_){}
 $('retry-facing').onclick=async()=>{
   facingAnalyzer.retryFailed();
-  for(const row of archiveMetadata.values())for(const [i,d]of SpatialHeading.frameDetections(row).entries()){const result=PairedFacing.baseFor(row,d);if(result?.state==='error')await photoArchive.saveOrientation(row.key,i,{...result,retry_attempts:0,next_retry_at:0,retry_exhausted:false});}
+  for(const row of archiveMetadata.values())for(const [i,d]of SpatialHeading.frameDetections(row).entries()){const result=savedFacing(row,d);if(result?.state==="error")await photoArchive.saveOrientation(row.key,i,{...result,retry_attempts:0,next_retry_at:0,retry_exhausted:false});}
   localFacingQueue.wake();scheduleFacing();queueViewPaint();
 };
 $('facing-enabled').addEventListener('change',()=>{try{localStorage.setItem('locaintel.facing',$('facing-enabled').checked?'on':'off');}catch(_){}facingAnalyzer.setBudget({delayMs:powerProfile.inferenceDelay});roadAnalyzer.setBudget({delayMs:powerProfile.inferenceDelay});scheduleFacing();localFacingQueue.wake();queueViewPaint();});
 function renderFacingStatus(snapshots){
-  const ds=snapshots.flatMap(vehicles).filter(d=>d.label==='car'),totals={toward_camera:0,away_from_camera:0,side:0,unresolved:0};let completed=0;
-  for(const d of ds){if(d.orientation&&!['queued','processing'].includes(d.orientation.state))completed++;if(d.orientation?.state!=='estimated'){totals.unresolved++;continue;}if(d.orientation.facing==='toward_camera'||d.orientation.facing==='away_from_camera')totals[d.orientation.facing]++;else totals.side++;}
-  SmoothUI.list($('facing-totals'),Object.entries(totals).map(([key,n])=>{const cell=node('div');cell.dataset.key=key;cell.append(node('strong',String(n)),node('span',{toward_camera:'FACING CAMERA',away_from_camera:'FACING AWAY',side:'SIDE VIEW',unresolved:'UNRESOLVED / WAITING'}[key]));return cell;}));
-  $('facing-status').textContent=!isLive()?'Saved facing estimates at the timeline cursor; no new crop inference.':!$('facing-enabled').checked?'New facing inference paused; saved estimates remain visible.':facingAnalyzer.phase==='loading'?'Loading the cached vehicle-view model (GPU where available); YOLO boxes stay visible.':facingAnalyzer.phase==='error'?'Facing model unavailable. Refresh retries failed crops; vehicle boxes and cached history remain available.':`${ds.filter(d=>d.orientation?.paired?.state==='confirmed').length} confirmed across 2+ screenshots · ${ds.filter(d=>d.orientation?.paired?.state==='pending').length} awaiting another matched screenshot${pairedModelError?' · '+pairedModelError:''} · ${ds.filter(d=>d.orientation?.road_direction?.state==='estimated').length} road-aligned directions · ${completed}/${ds.length} car boxes have facing results · ${ds.filter(d=>d.orientation?.model_ran).length} evaluated by the model · ${ds.filter(d=>d.orientation?.quality_abstention).length} low-quality abstentions · ${ds.filter(d=>d.orientation?.state==='error').length} errors · ${facingAnalyzer.queue.length} queued · local cached-photo backfill ${localFacingQueue.active?'active':'ready'}${facingAnalyzer.backend==='webgl'?' · GPU / WebGL':facingAnalyzer.backend==='webgpu'?' · GPU / WebGPU':facingAnalyzer.backend==='wasm'?' · CPU fallback / WASM':''}${facingAnalyzer.path==='fast-verified'?' · fast verified':facingAnalyzer.path==='full-resolution'?' · full-resolution check':''}${facingAnalyzer.backend==='wasm'&&facingAnalyzer.fallback?' · '+facingAnalyzer.fallback:''}${Number.isFinite(facingAnalyzer.lastInferenceMs)?' · '+(facingAnalyzer.lastReused?'exact crop reused':facingAnalyzer.lastInferenceMs+' ms / crop'):''}${facingAnalyzer.actualBatchSize>1?' · GPU batch capacity '+facingAnalyzer.actualBatchSize+' cars':''}${facingAnalyzer.lastBatchCount>1?' · '+facingAnalyzer.lastBatchCount+' cars / last batch':''}${facingAnalyzer.batchError?' · batch fallback: '+facingAnalyzer.batchError:''}${facingAnalyzer.running?' · analyzing crops':''}. Every valid car box on viewed feeds runs through facing inference. Facing confirmation requires two distinct same-camera screenshots within 15 seconds; up to five cached screenshots check consistency. One follow-up fetch after 5 seconds is retried once if unchanged. Repeated upstream images and unmatched vehicles stay unresolved. Tiny and clipped crops retain diagnostics but abstain from direction estimates. Other vehicle classes are unsupported. Scores are not calibrated probabilities.`;
+  const ds=snapshots.flatMap(vehicles),totals={toward_camera:0,away_from_camera:0,side:0,unresolved:0},tiers={high:0,medium:0,low:0};let completed=0;
+  for(const d of ds){if(d.orientation&&!['queued','processing'].includes(d.orientation.state))completed++;if(d.orientation?.state!=='estimated'){totals.unresolved++;continue;}if(d.orientation.tier)tiers[d.orientation.tier]++;if(d.orientation.facing==='toward_camera'||d.orientation.facing==='away_from_camera')totals[d.orientation.facing]++;else totals.side++;}
+  SmoothUI.list($('facing-totals'),Object.entries(totals).map(([key,n])=>{const cell=node('div');cell.dataset.key=key;cell.append(node('strong',String(n)),node('span',{toward_camera:'FACING CAMERA',away_from_camera:'FACING AWAY',side:'SIDE VIEW',unresolved:'WAITING / SKIPPED'}[key]));return cell;}));
+  $('facing-status').textContent=!isLive()?'Saved facing estimates at the timeline cursor; no new crop inference.':!$('facing-enabled').checked?'New facing inference paused; saved estimates remain visible.':facingAnalyzer.phase==='loading'?'Loading the cached vehicle-view model (GPU where available); YOLO boxes stay visible.':facingAnalyzer.phase==='error'?'Facing model unavailable. Refresh retries failed crops; vehicle boxes and cached history remain available.':`${totals.toward_camera+totals.away_from_camera+totals.side}/${ds.length} vehicles have facing (${tiers.high} high · ${tiers.medium} medium · ${tiers.low} low confidence) · ${facingAnalyzer.queue.length} queued${facingAnalyzer.backend==='webgl'?' · GPU / WebGL':facingAnalyzer.backend==='webgpu'?' · GPU / WebGPU':facingAnalyzer.backend==='wasm'?' · CPU fallback / WASM':''}${facingAnalyzer.backend==='wasm'&&facingAnalyzer.fallback?' · '+facingAnalyzer.fallback:''}${Number.isFinite(facingAnalyzer.lastInferenceMs)?' · '+(facingAnalyzer.lastReused?'exact crop reused':facingAnalyzer.lastInferenceMs+' ms / crop'):''}${facingAnalyzer.running?' · analyzing one crop':''}. Runs on viewed feeds; vehicles under 8×6 pixels, motorcycles and bicycles are skipped.`;
   notifyPane('facing','Vehicle facing',[totals,completed,facingAnalyzer.phase,facingAnalyzer.backend,facingAnalyzer.path,facingAnalyzer.lastInferenceMs,isLive(),$('facing-enabled').checked],$('facing-updated'),$('facing-pane'));
 }
 function renderFacingLayer(picture,c,detail,focused){
@@ -786,8 +790,8 @@ function renderFacingInspector(c){
   const details=node('div'),o=d.orientation;details.append(node('h3',`Isolated vehicle #${index+1} · ${d.label}`),node('p',VehicleFacing.description(o),'facing-caption'));
   if(o?.paired)details.append(node('p',o.paired.state==='confirmed'?`${o.paired.count} distinct cached screenshots agree · ${o.paired.frameHashes.map(h=>h.slice(0,8)).join(' / ')}`:`Awaiting confirmed second screenshot · ${o.reason?.replaceAll('_',' ')}`,'widget-note'));
   const lightText={headlight_pair:'Paired bright white/yellow pixels: possible headlights.',taillight_pair:'Paired red pixels: possible taillights.',ambiguous:'Both lamp colors present; lamp evidence is ambiguous.',none:'No reliable paired-lamp cue.'}[o?.lights?.type]||'Lamp evidence pending.';
-  details.append(node('p',d.road_axis?'Local road axis available · '+(o?.road_direction?.state==='estimated'?'road-aligned estimated direction: '+o.road_direction.direction:o?.road_direction?.reason==='facing_road_axis_disagree'?'axis and facing disagree; direction unresolved':'waiting for consistent facing to choose its direction'):d.on_road===false?'Road model does not support this car footprint.':'Road-axis evidence is unavailable or ambiguous here.','widget-note'),node('p',lightText,'widget-note'),node('p',o?.model?`${o.view?.replaceAll('_',' ')} · model group score ${o.score?.toFixed(2)} (uncalibrated)${Number.isFinite(o.mirror_error_degrees)?' · mirror error '+Math.round(o.mirror_error_degrees)+'°':''} · ${o.crop?.width||'?'}×${o.crop?.height||'?'} source pixels`:'Car crops are evaluated by the pretrained eight-view model when enough source pixels are available.','widget-note'),node('p','This is an appearance estimate. Movement and stationary evidence stay separate.','widget-note'));
-  if(o?.model)details.append(node('p',`${o.model}${o.backend==='webgl'?' · GPU / WebGL':o.backend==='webgpu'?' · GPU / WebGPU':o.backend==='wasm'?' · CPU fallback / WASM':''}${o.path==='fast-verified'?' · batched mirror verified':o.path==='full-resolution'?' · full-resolution check':''}${Number.isFinite(o.inference_ms)?' · '+o.inference_ms+' ms':''}${o.backend==='wasm'&&o.fallback?' · '+o.fallback:''}`,'widget-note'));
+  details.append(node('p',d.road_axis?'Local road axis available · '+(o?.road_direction?.state==='estimated'?'road-aligned estimated direction: '+o.road_direction.direction:o?.road_direction?.reason==='facing_road_axis_disagree'?'axis and facing disagree; direction unresolved':'waiting for consistent facing to choose its direction'):d.on_road===false?'Road model does not support this car footprint.':'Road-axis evidence is unavailable or ambiguous here.','widget-note'),node('p',lightText,'widget-note'),node('p',o?.model?`${o.tier||'?'} confidence · ${o.group||''} probability ${Number.isFinite(o.confidence)?o.confidence.toFixed(2):'?'}${o.truncated?' · cut off at image edge':''} · ${o.crop?.width||'?'}×${o.crop?.height||'?'} source pixels`:'Vehicles at least 8×6 source pixels are evaluated by the DriveBC-adapted facing model.','widget-note'),node('p','This is an appearance estimate. Movement and stationary evidence stay separate.','widget-note'));
+  if(o?.model)details.append(node('p',`${o.model}${o.backend==='webgl'?' · GPU / WebGL':o.backend==='webgpu'?' · GPU / WebGPU':o.backend==='wasm'?' · CPU fallback / WASM':''}${o.path==='mirror-averaged'?' · crop + mirror averaged':''}${Number.isFinite(o.inference_ms)?' · '+o.inference_ms+' ms':''}${o.backend==='wasm'&&o.fallback?' · '+o.fallback:''}`,'widget-note'));
   pane.replaceChildren(canvas,details);
   (async()=>{const blob=source?.blob||await photoArchive.photo(c.hash);if(!blob||pane.dataset.cropKey!==key)return;const image=await createImageBitmap(blob);try{if(pane.dataset.cropKey!==key)return;const [x,y,xx,yy]=d.box;canvas.height=Math.max(1,Math.round(224*(yy-y)*image.height/((xx-x)*image.width)));const ctx=canvas.getContext('2d');ctx.drawImage(image,x*image.width,y*image.height,(xx-x)*image.width,(yy-y)*image.height,0,0,224,canvas.height);for(const [px,py]of o?.lights?.points||[]){ctx.beginPath();ctx.arc((px-x)/(xx-x)*224,(py-y)/(yy-y)*canvas.height,5,0,Math.PI*2);ctx.strokeStyle=o.lights.type==='taillight_pair'?'#ff8b8b':'#fff3b0';ctx.lineWidth=2;ctx.stroke();}}finally{image.close();}})().catch(()=>{if(pane.dataset.cropKey===key)canvas.setAttribute('aria-label','Saved crop unavailable');});
 }

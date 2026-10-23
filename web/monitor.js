@@ -56,7 +56,7 @@
         const now=Date.now(),time=Number.isFinite(observedAt)?observedAt:Date.parse(source.checked)||now;
         const incomingRank={none:0,browser:1,published:2}[analysisMode]||0,existingRank={none:0,browser:1,published:2}[existing?.analysisMode]||0;
         const row={...existing,key,cameraId:String(camera.id),hash:source.hash,observedAt:existing?Math.min(existing.observedAt,time):time,lastSeen:now,width:source.width||existing?.width||null,height:source.height||existing?.height||null,sourceModified:source.modified||existing?.sourceModified||null,
-          camera:{id:String(camera.id),name:camera.name,caption:camera.caption,region:camera.region,highway:camera.highway,lat:camera.lat,lon:camera.lon,source:camera.source,image:camera.image}};
+          camera:{id:String(camera.id),name:camera.name,caption:camera.caption,orientation:camera.orientation,region:camera.region,highway:camera.highway,lat:camera.lat,lon:camera.lon,source:camera.source,image:camera.image}};
         if(!existing||incomingRank>=existingRank){row.analysisMode=analysisMode;if(detectorVersion)row.detectorVersion=detectorVersion;if(detections!==undefined)row.detections=detections;if(counts!==undefined)row.counts=counts;if(analysis!==undefined)row.analysis=analysis;}
         const newPhoto=!await request(photos.get(source.hash));
         if(newPhoto)photos.put({hash:source.hash,blob:source.blob,size:source.blob.size});
@@ -121,6 +121,11 @@
       const db=await this.open(),tx=db.transaction('settings','readwrite'),done=complete(tx);tx.objectStore('settings').put(reference,'direction-references:'+cameraId);await done;return reference;
     });}
     async references(){await this.chain;const db=await this.open(),tx=db.transaction('settings','readonly'),store=tx.objectStore('settings');const [keys,values]=await Promise.all([request(store.getAllKeys()),request(store.getAll())]);return new Map(keys.flatMap((key,i)=>String(key).startsWith('direction-references:')?[[String(key).slice(21),values[i]]]:[]));}
+
+    saveRouteFeatures(key,result){return this.enqueue(async()=>{
+      const db=await this.open(),tx=db.transaction('frames','readwrite'),done=complete(tx),store=tx.objectStore('frames'),row=await request(store.get(key));
+      if(row){row.routeFeatures=result;store.put(row);}await done;if(row)this.onChange({row,removedKeys:[]});return row;
+    });}
 
     async metadata(){await this.chain;const db=await this.open(),tx=db.transaction('frames','readonly');return request(tx.objectStore('frames').getAll());}
     async photo(hash){const db=await this.open(),tx=db.transaction('photos','readonly');return (await request(tx.objectStore('photos').get(hash)))?.blob||null;}

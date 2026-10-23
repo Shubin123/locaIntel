@@ -18,3 +18,21 @@ h1{font-size:clamp(32px,3.5vw,49px);letter-spacing:-2px;margin:15px 0}.stats{mar
 
 .road-widget{grid-column:1/-1}
 .heading-controls{margin:16px 0;padding:14px;border:1px solid #415067;border-radius:6px}.reference-actions{display:flex;gap:8px;flex-wrap:wrap}.reference-actions button{width:auto;padding:9px 12px}.heading-controls .check{margin:0 0 12px}.heading-controls summary{cursor:pointer;font-size:12px;color:#c3a1ff}.heading-controls ol{font:11px monospace;max-height:140px;overflow:auto}.heading-controls form{display:flex;gap:9px;align-items:end;flex-wrap:wrap}.heading-controls form label{margin:12px 0 0;flex:1;min-width:65px}.heading-controls form input{padding:8px;min-width:0}.heading-controls form button{width:auto;padding:9px 12px}.picture .spatial-vector-layer{z-index:4;pointer-events:none}.picture.drawing-reference{cursor:crosshair;touch-action:none}.picture.drawing-reference img{pointer-events:none;user-select:none}#keep-browser-data{width:auto;margin-top:12px;padding:9px 12px}#retention-status{margin-bottom:8px}
+
+/* Layout cleanup: compact hero, header nav, collapsible settings and sources. */
+header nav{display:flex;gap:22px;font-size:12px;color:var(--muted)}header nav a:last-child{color:var(--accent)}
+.hero{display:flex;justify-content:space-between;align-items:end;gap:24px}.hero p{margin:0;color:var(--muted);line-height:1.7;max-width:640px}.hero #status{font-size:12px;color:var(--muted);text-align:right;max-width:360px}
+.intelligence{grid-template-columns:1.5fr 1fr}.road-widget,.facing-widget{grid-column:auto}
+details.about{margin-top:6px;font-size:12px;color:var(--muted)}details.about summary,details.settings>summary,details.sources>summary{cursor:pointer;list-style-position:outside}details.about summary{font-size:11px;color:#a9b8c0}details.about[open] summary{margin-bottom:4px}
+details.settings{margin-top:36px;padding:18px 22px}details.settings>summary,details.sources>summary{display:flex;gap:14px;align-items:center;font-size:14px}details.settings[open]>summary{margin-bottom:18px}.monitor-settings{margin:0}.monitor-settings>article{border:1px solid var(--line);border-radius:6px;padding:18px}
+details.sources{border-top:1px solid var(--line);margin-top:36px;padding-top:24px}details.sources[open]>summary{margin-bottom:12px}
+/* Vehicle routes. */
+.routes-widget{margin-bottom:24px}.routes-controls{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;margin-bottom:14px}.routes-controls label{margin:0;display:flex;align-items:center;gap:8px}.routes-controls select{width:auto;padding:8px}
+.routes-layout{display:grid;grid-template-columns:1.6fr 1fr;gap:18px}#routes-map{height:420px;background:#1b2a31;border:1px solid var(--line);border-radius:5px;z-index:0}
+.route-totals{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}.route-totals strong{font-size:24px;margin:0;color:#ffd36b}.route-totals span{font-size:9px;letter-spacing:1.2px;color:var(--muted)}
+.route-list{list-style:none;margin:0;padding:0;max-height:340px;overflow:auto}.route-item{border-top:1px solid var(--line);padding:10px 0}.route-item.active{background:#2a2614;border:1px solid #8c7633;border-radius:5px;padding:10px 8px}
+.route-summary{display:block;text-align:left;background:none;border:0;padding:0;width:100%}.route-summary strong{display:block;font:600 13px 'DM Sans',sans-serif;margin:0 0 4px}.route-summary span{font-size:11px;color:var(--muted);line-height:1.6}
+.route-hops{display:flex;gap:6px;overflow-x:auto;margin-top:8px}.route-hop{display:flex;flex-direction:column;gap:4px;width:92px;flex-shrink:0;padding:4px;font-size:9px;color:var(--muted);text-align:left}.route-hop canvas{width:100%;height:auto;border-radius:3px;background:#0d171c}
+@media(max-width:900px){.intelligence{grid-template-columns:1fr}.routes-layout{grid-template-columns:1fr}#routes-map{height:340px}.hero{display:block}.hero #status{text-align:left;margin-top:12px}}
+@media(max-width:680px){header nav a:not(:last-child){display:none}.route-totals{grid-template-columns:repeat(2,1fr)}}
+.facing-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.facing-controls button{width:auto;padding:8px 12px}#model-cache-pane{border:1px solid var(--line);border-radius:6px;padding:18px;grid-column:1/-1}#keep-browser-data{width:auto;padding:8px;margin-top:10px;font-size:10px}

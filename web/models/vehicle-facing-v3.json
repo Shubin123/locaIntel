@@ -1,0 +1,50 @@
+{
+  "version": "drivebc-facing-v3",
+  "file": "drivebc-facing-v3.onnx",
+  "bytes": 16852997,
+  "sha256": "0b5bc0720f3d5d2571f5427d3414f96cc3a476fd5cabdb2ea8678a410fab305d",
+  "model": "MobileNetV3-Large, CFV + DriveBC adapted",
+  "input": {
+    "size": 224,
+    "internal_size": 160,
+    "rescale": 0.00392156862745098
+  },
+  "views": [
+    "front",
+    "front_left",
+    "left_side",
+    "rear_left",
+    "rear",
+    "rear_right",
+    "right_side",
+    "front_right"
+  ],
+  "policy": {
+    "high": 0.95,
+    "medium": 0.7
+  },
+  "crossval": {
+    "labels": 474,
+    "cameras": 241,
+    "folds": 5,
+    "baseline_accuracy": 0.5021097046413502,
+    "adapted_accuracy": 0.7426160337552743,
+    "tiers": {
+      "high": {
+        "share": 0.36075949367088606,
+        "accuracy": 0.9005847953216374
+      },
+      "medium": {
+        "share": 0.3987341772151899,
+        "accuracy": 0.7142857142857143
+      },
+      "low": {
+        "share": 0.24050632911392406,
+        "accuracy": 0.5526315789473685
+      }
+    }
+  },
+  "labels": "pipeline/data/drivebc-facing-labels.json",
+  "limitations": "Visible side of the vehicle from one photo. Accuracy measured on hand-labeled DriveBC crops with camera-grouped cross-validation; facing is not measured motion.",
+  "checkpoint_sha256": "0fdf2fe121fdaad8a1592b137dcf51a7c0fcdf9940f63e252c5b7929df960fbc"
+}

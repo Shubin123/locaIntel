@@ -1,17 +1,16 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),vm=require('vm');
 const scope=extra=>{const c=vm.createContext({setTimeout,clearTimeout,queueMicrotask,Date,Float32Array,...extra});vm.runInContext(fs.readFileSync('web/orientation.js','utf8'),c);return c.VehicleFacing;};
-const m=JSON.parse(fs.readFileSync('web/models/vehicle-facing-v1.json')),f=scope(),logits=index=>Array.from({length:8},(_,i)=>i===index?8:-5);
+const m={model:'test',policy:{high:.8,medium:.6},views:['front','front_left','left_side','rear_left','rear','rear_right','right_side','front_right'],angle_convention:'CFV relative view'},f=scope(),logits=index=>Array.from({length:8},(_,i)=>i===index?8:-5);
 test('trained front/rear/side classes decode to facing without claiming motion',()=>{for(const [index,facing]of [[0,'toward_camera'],[4,'away_from_camera'],[2,'image_right']]){const r=f.classify(logits(index),index/8,m,{type:'none'},{logits:logits((8-index)%8),angle:((8-index)%8)/8});assert.equal(r.state,'estimated');assert.equal(r.facing,facing);assert.equal(r.measured_motion,false);assert.equal(r.mirror_consistent,true);}});
 test('angle disagreement, mirror disagreement and conflicting lamps reject an estimate',()=>{assert.equal(f.classify(logits(0),.5,m).reason,'angle_view_disagreement');assert.equal(f.classify(logits(0),0,m,{type:'taillight_pair'}).reason,'lamp_model_disagreement');assert.equal(f.classify(logits(1),.125,m,{type:'none'},{logits:logits(3),angle:.375}).reason,'mirror_disagreement');assert.equal(f.classify(Array(8).fill(0),0,m).state,'unknown');assert.throws(()=>f.decode([NaN],0),/Invalid/);});
 test('paired lamps distinguish red tail cues and white head cues but reject red body panels',()=>{const pixels=color=>{const data=new Uint8ClampedArray(100*60*4);for(const [x,y,w,h]of [[20,35,4,3],[72,35,4,3]])for(let yy=y;yy<y+h;yy++)for(let xx=x;xx<x+w;xx++)for(let c=0;c<3;c++)data[(yy*100+xx)*4+c]=color[c];return data;};assert.equal(f.lampPairs(pixels([255,240,210]),100,60).type,'headlight_pair');assert.equal(f.lampPairs(pixels([240,30,20]),100,60).type,'taillight_pair');const solid=new Uint8ClampedArray(100*60*4);for(let i=0;i<solid.length;i+=4)solid[i]=240;assert.equal(f.lampPairs(solid,100,60).type,'none');});
-test('tiny and clipped car crops run inference but retain strict quality abstentions',async()=>{
+test('only sub-8×6-pixel crops abstain; clipped crops are flagged for a lower tier',async()=>{
  let closed=0;const context2d={fillRect(){},drawImage(){},getImageData:()=>({data:new Uint8ClampedArray(224*224*4)})};
  const g=scope({createImageBitmap:async()=>({width:640,height:400,close(){closed++;}}),document:{createElement:()=>({getContext:()=>context2d})}});
  const prediction={state:'estimated',facing:'toward_camera',image_direction:'down',facing_glyph:'↓',model:'CFV',mirror_consistent:true};
- for(const [box,reason]of [[[.1,.1,.12,.12],'crop_too_small'],[[0,.2,.3,.5],'truncated_crop']]){
-  const prepared=await g.prepare({blob:{}},{label:'car',box});assert.equal(prepared.skip,undefined);assert.equal(prepared.input.length,150528);assert.equal(prepared.quality,reason);
-  const result=g.qualityGate(prediction,prepared);assert.equal(result.state,'unknown');assert.equal(result.reason,reason);assert.equal(result.model_ran,true);assert.equal(result.facing_glyph,undefined);
- }
+ const tiny=await g.prepare({blob:{}},{label:'car',box:[.1,.1,.105,.105]});assert.equal(tiny.skip,undefined);assert.equal(tiny.input.length,150528);assert.equal(tiny.quality,'crop_too_small');
+ const result=g.qualityGate(prediction,tiny);assert.equal(result.state,'unknown');assert.equal(result.reason,'crop_too_small');assert.equal(result.model_ran,true);assert.equal(result.facing_glyph,undefined);
+ const clipped=await g.prepare({blob:{}},{label:'truck',box:[0,.2,.3,.5]});assert.equal(clipped.quality,null);assert.equal(clipped.truncated,true);assert.equal(g.qualityGate(prediction,clipped).state,'estimated');
  assert.equal(closed,2);
 });
 test('crop inference is serial, deduplicated, paced, and pauses queued work',async()=>{let paused=true,active=0,peak=0,calls=0;const starts=[],records=[];class Worker{postMessage(msg){calls++;starts.push(Date.now());active++;peak=Math.max(peak,active);setTimeout(()=>{active--;this.onmessage({data:{id:msg.id,result:{state:'estimated',facing:'toward_camera',version:f.VERSION,measured_motion:false}}});},2);}terminate(){}}
@@ -66,4 +65,14 @@ test('failed GPU batching keeps subsequent work individual until the batch setti
  paused=false;q.wake();while(records.length<5)await new Promise(r=>setTimeout(r,2));
  assert.equal(calls[0].jobs.length,2);assert(calls.slice(1).every(c=>c.input));assert.equal(q.batchError,'GPU batch exhausted memory');
  q.setBudget({batchSize:4});assert.equal(q.batchError,null);
+});
+test('every supported crop gets a facing with a confidence tier; mirror views are averaged',()=>{
+ const pair=(a,b)=>[...logits(a),...logits(b)];
+ const front=f.estimate(pair(0,0),m);assert.equal(front.state,'estimated');assert.equal(front.facing,'toward_camera');assert.equal(front.tier,'high');assert.equal(front.travel_offset,180);assert.equal(front.facing_glyph,'↓');assert.equal(front.measured_motion,false);
+ const rear=f.estimate(pair(4,4),m);assert.equal(rear.facing,'away_from_camera');assert.equal(rear.travel_offset,0);
+ // A left-side view and the mirror of a right-side view agree: nose points image-right.
+ const side=f.estimate(pair(2,6),m);assert.equal(side.group,'side');assert.equal(side.facing,'image_right');assert.equal(side.travel_offset,90);assert.equal(side.facing_glyph,'→');
+ const unsure=f.estimate(Array(16).fill(0),m);assert.equal(unsure.state,'estimated');assert.equal(unsure.tier,'low');
+ assert.equal(f.estimate(pair(0,0),m,{type:'taillight_pair'}).tier,'medium');assert.equal(f.estimate(pair(0,0),m,{type:'none'},{truncated:true}).tier,'medium');
+ assert.throws(()=>f.estimate([NaN],m),/Invalid/);
 });

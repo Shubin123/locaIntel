@@ -1,7 +1,7 @@
 /* Retry missed facing jobs only from IndexedDB photos. Never fetch image URLs. */
 (function(root){
   const fingerprint=d=>JSON.stringify([d.label,d.box]);
-  const valid=d=>d?.label==='car'&&Array.isArray(d.box)&&d.box.length===4&&d.box.every(v=>Number.isFinite(v)&&v>=0&&v<=1)&&d.box[2]>d.box[0]&&d.box[3]>d.box[1];
+  const valid=d=>['car','truck','bus'].includes(d?.label)&&Array.isArray(d.box)&&d.box.length===4&&d.box.every(v=>Number.isFinite(v)&&v>=0&&v<=1)&&d.box[2]>d.box[0]&&d.box[3]>d.box[1];
   class LocalFacingQueue{
     constructor({rows,photo,analyzer,isPaused=()=>false,onError=()=>{},delayMs=500}={}){Object.assign(this,{rows,photo,analyzer,isPaused,onError,delayMs});this.active=null;this.activeHashes=new Set();this.loading=false;this.timer=null;this.timerAt=Infinity;this.missing=new Set();this.disposed=false;}
     markMissing(key){this.missing.add(key);while(this.missing.size>256)this.missing.delete(this.missing.values().next().value);}

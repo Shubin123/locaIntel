@@ -23,7 +23,7 @@ class SitePublicationTests(unittest.TestCase):
             file.write_text('public application fixture\n')
         self.camera = dict(id='238', name='Camera', region='North', highway='1', caption='Road',
                            image='https://www.drivebc.ca/images/238.jpg',
-                           source='https://images.drivebc.ca/bchighwaycam/pub/html/123.html', lat=49, lon=-123)
+                           source='https://images.drivebc.ca/bchighwaycam/pub/html/123.html', lat=49, lon=-123, orientation='N')
         self.latest = dict(storage_mode='browser-only', generated='2026-10-20T12:00:00Z',
                            cameras=[self.camera], catalog_size=1, errors=[], model='On-device inference', schema_version=2)
         self.write_data()

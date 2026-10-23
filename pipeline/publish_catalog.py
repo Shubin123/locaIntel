@@ -20,7 +20,8 @@ def publish(output=Path('web/data'), fetch=None):
         cameras.append(dict(id=row['id'], name=row['camName'], region=row['region_name'],
                             highway=row['highway_number'], caption=row['caption'],
                             image=row['links_imageURL'], source=row['links_camDetailsPage'],
-                            lat=float(row['latitude']), lon=float(row['longitude'])))
+                            lat=float(row['latitude']), lon=float(row['longitude']),
+                            orientation=row.get('orientation') or ''))
     if not cameras:
         raise ValueError('Camera catalog is empty')
     output.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,12 @@
 /* Vehicle facing from isolated crops. These estimates never set motion.state. */
 (function(root){
-  const VERSION='cfv-facing-cascade-v4',SIZE=224,supported=new Set(['car']);
+  // v3: one DriveBC-adapted model for every car, truck and bus. LEGACY tags the
+  // retired CFV cascade (classify/fastClassify), kept for archived results.
+  const VERSION='drivebc-facing-v3',LEGACY='cfv-facing-cascade-v4',SIZE=224,supported=new Set(['car','truck','bus']);
+  // Travel direction relative to the camera's look direction for each CFV view (0 = away, 180 = toward).
+  // CFV's left-side view shows the car's left flank, so its nose points image-right (checked on DriveBC crops).
+  const OFFSETS=[180,135,90,45,0,315,270,225],GLYPHS={0:'↑',45:'↗',90:'→',135:'↘',180:'↓',225:'↙',270:'←',315:'↖'};
+  const DIRECTIONS={0:'up',45:'up-right',90:'right',135:'down-right',180:'down',225:'down-left',270:'left',315:'up-left'};
   const fingerprint=d=>JSON.stringify([d.label,d.box]);
   function lampPairs(rgba,width,height){
     const find=kind=>{
@@ -34,7 +40,7 @@
   }
   function classify(logits,angle,manifest,lights={type:'none'},mirrored=null){
     const p=decode(logits,angle),lightView=lights.type==='headlight_pair'?'front':lights.type==='taillight_pair'?'rear':null;
-    const result={version:VERSION,model:manifest.model,state:'unknown',facing:'unknown',view:manifest.views[p.index],score:p.score,margin:p.margin,view_scores:p.probabilities,angle_degrees:p.angle,angle_convention:manifest.angle_convention,lights,method:'cfv_supervised_view_and_angle_plus_lamp_evidence',measured_motion:false};
+    const result={version:LEGACY,model:manifest.model,state:'unknown',facing:'unknown',view:manifest.views[p.index],score:p.score,margin:p.margin,view_scores:p.probabilities,angle_degrees:p.angle,angle_convention:manifest.angle_convention,lights,method:'cfv_supervised_view_and_angle_plus_lamp_evidence',measured_motion:false};
     if(mirrored){
       const flip=decode(mirrored.logits,mirrored.angle),error=circularError(flip.angle,(360-p.angle)%360);
       result.mirror_view_scores=flip.probabilities;result.mirror_angle_degrees=flip.angle;
@@ -61,13 +67,33 @@
     if(!strong)return {...result,state:'unknown',facing:'unknown',image_direction:undefined,facing_glyph:undefined,reason:'fast_model_requires_full_resolution_check'};
     return {...result,method:'cfv_low_resolution_supervised_mobilenet_mirror_verified',calibration_temperature:temperature};
   }
+  const softmax=values=>{const maximum=Math.max(...values),e=values.map(v=>Math.exp(v-maximum)),sum=e.reduce((a,b)=>a+b);return e.map(v=>v/sum);};
+  // Crop + mirror averaged. Always estimates; the confidence tier carries the uncertainty.
+  function estimate(logits,manifest,lights={type:'none'},{truncated=false}={}){
+    const policy=manifest?.policy;
+    if(!policy||logits.length!==16||!logits.every(Number.isFinite))throw Error('Invalid facing model output or policy');
+    const original=softmax(logits.slice(0,8)),flipped=softmax(logits.slice(8)),p=original.map((v,k)=>(v+flipped[(8-k)%8])/2);
+    const groups={front:p[0]+p[1]+p[7],rear:p[3]+p[4]+p[5],side:p[2]+p[6]},order=Object.keys(groups).sort((a,b)=>groups[b]-groups[a]),group=order[0];
+    const lightView=lights.type==='headlight_pair'?'front':lights.type==='taillight_pair'?'rear':null,score=groups[group];
+    let tier=score>=policy.high?'high':score>=policy.medium?'medium':'low';
+    const drop=()=>{tier=tier==='high'?'medium':'low';};
+    if(truncated)drop();if(lightView&&group!=='side'&&lightView!==group)drop();
+    const members=group==='front'?[7,0,1]:group==='rear'?[3,4,5]:p[2]>=p[6]?[1,2,3]:[5,6,7];
+    let sx=0,sy=0;for(const k of members){sx+=p[k]*Math.sin(OFFSETS[k]*Math.PI/180);sy+=p[k]*Math.cos(OFFSETS[k]*Math.PI/180);}
+    const offset=(Math.round(((Math.atan2(sx,sy)*180/Math.PI+360)%360)/45)*45)%360;
+    const facing=group==='front'?'toward_camera':group==='rear'?'away_from_camera':offset<180?'image_right':'image_left';
+    // Spatial heading fusion only trusts medium/high appearance directions.
+    return {version:VERSION,model:manifest.model,state:'estimated',facing,group,tier,confidence:score,score,margin:score-groups[order[1]],group_scores:groups,view_scores:p,
+      travel_offset:offset,facing_glyph:GLYPHS[offset],image_direction:tier==='low'?undefined:DIRECTIONS[offset],mirror_consistent:tier!=='low',lights,truncated,measured_motion:false,
+      method:'drivebc_adapted_mobilenet_mirror_averaged',reason:lightView===group?'model_and_light_pair_agree':lightView&&group!=='side'?'lamp_model_disagreement':'trained_crop_appearance'};
+  }
   async function prepare(source,d,resources={}){
     const image=resources.image||await createImageBitmap(source.blob);
     try{
       const [x,y,xx,yy]=d.box,w=(xx-x)*image.width,h=(yy-y)*image.height;
       const crop={width:Math.round(w),height:Math.round(h)};
       if(!supported.has(d.label)||!d.box.every(Number.isFinite)||w<=0||h<=0)return {skip:{version:VERSION,state:'unknown',facing:'unknown',reason:!supported.has(d.label)?'unsupported_vehicle':'invalid_crop',crop,measured_motion:false,model_ran:false}};
-      const quality=w<20||h<16||w*h<600?'crop_too_small':x<=.001||y<=.001||xx>=.999||yy>=.999?'truncated_crop':null;
+      const quality=w<8||h<6?'crop_too_small':null,truncated=x<=.001||y<=.001||xx>=.999||yy>=.999;
       const canvas=resources.canvas||document.createElement('canvas');canvas.width=canvas.height=SIZE;const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.fillStyle='rgb(114,114,114)';ctx.fillRect(0,0,SIZE,SIZE);
       ctx.drawImage(image,x*image.width,y*image.height,w,h,0,0,SIZE,SIZE);
       const pixels=ctx.getImageData(0,0,SIZE,SIZE).data,visualKey=typeof crypto!=='undefined'&&crypto.subtle?[...new Uint8Array(await crypto.subtle.digest('SHA-256',pixels))].map(v=>v.toString(16).padStart(2,'0')).join(''):null,input=new Float32Array(SIZE*SIZE*3),plane=SIZE*SIZE;
@@ -76,7 +102,7 @@
       const lc=lampCanvas.getContext('2d',{willReadFrequently:true});lc.drawImage(image,x*image.width,y*image.height,w,h,0,0,lampCanvas.width,lampCanvas.height);
       const lights=lampPairs(lc.getImageData(0,0,lampCanvas.width,lampCanvas.height).data,lampCanvas.width,lampCanvas.height);
       lights.points=lights.points.map(([px,py])=>[x+px*(xx-x),y+py*(yy-y)]);
-      return {input,label:d.label,lights,crop,visualKey,quality};
+      return {input,label:d.label,lights,crop,visualKey,quality,truncated};
     }finally{if(!resources.image)image.close();}
   }
   // Decode each camera photo once across its crops; cap retained bitmaps at
@@ -99,7 +125,7 @@
     return prepared.quality?{...base,state:'unknown',facing:'unknown',reason:prepared.quality,image_direction:undefined,facing_glyph:undefined,quality_abstention:true}:base;
   }
   class CropOrientation{
-    constructor({workerFactory=()=>new Worker('orientation-worker.js?v=local-1'),prepareCrop=createPreparer(),onChange=()=>{},onResult=()=>{},isPaused=()=>false,isWanted=()=>true,delayMs=350,timeout=90000,batchSize=1,retryDelays=[2000,10000],onModelUpdate=()=>{}}={}){
+    constructor({workerFactory=()=>new Worker('orientation-worker.js?v=facing-v3-merge'),prepareCrop=createPreparer(),onChange=()=>{},onResult=()=>{},isPaused=()=>false,isWanted=()=>true,delayMs=350,timeout=90000,batchSize=1,retryDelays=[2000,10000],onModelUpdate=()=>{}}={}){
       Object.assign(this,{workerFactory,prepareCrop,onChange,onResult,isPaused,isWanted,delayMs,timeout});this.retryDelays=retryDelays;this.onModelUpdate=onModelUpdate;this.batchSize=[1,2,4,8].includes(Number(batchSize))?Number(batchSize):1;this.version=VERSION;this.entries=new Map();this.visualEntries=new Map();this.queue=[];this.running=false;this.worker=null;this.serial=0;this.waiter=null;this.cooldown=null;this.phase='idle';
     }
     key(source,d){return source.cameraId+':'+source.hash+':'+fingerprint(d);}
@@ -161,6 +187,6 @@
     wake(){this.pump();}
     retryFailed(){for(const [k,v]of this.entries)if(v.state==='error')this.entries.delete(k);if(this.phase==='error'&&!this.running){this.worker?.terminate();this.worker=null;this.phase='idle';}}
   }
-  function description(o){if(!o)return 'Facing: waiting for crop analysis';if(o.state==='queued'||o.state==='processing')return 'Facing: analyzing isolated crop…';if(o.state==='error')return 'Facing unavailable: '+o.reason;if(o.state!=='estimated')return 'Facing unresolved · '+(o.reason||'insufficient evidence').replaceAll('_',' ');return 'Estimated facing: '+({toward_camera:'toward camera · front visible',away_from_camera:'away from camera · rear visible',image_left:'← left on image',image_right:'→ right on image',side_view:'side view · nose direction unresolved'}[o.facing]||o.facing)+(o.facing_glyph?' · approximate image facing '+o.facing_glyph:'')+(o.reason==='model_and_light_pair_agree'?' · light pair agrees':'');}
-  root.VehicleFacing={VERSION,SIZE,fingerprint,lampPairs,circularError,decode,classify,fastClassify,prepare,createPreparer,qualityGate,CropOrientation,description};
+  function description(o){if(!o)return 'Facing: waiting for analysis';if(o.state==='queued'||o.state==='processing')return 'Facing: analyzing…';if(o.state==='error')return 'Facing unavailable: '+o.reason;if(o.state!=='estimated')return 'Facing unresolved · '+(o.reason||'insufficient evidence').replaceAll('_',' ');return 'Facing: '+({toward_camera:'toward camera · front visible',away_from_camera:'away from camera · rear visible',image_left:'← left on image',image_right:'→ right on image',side_view:'side view'}[o.facing]||o.facing)+(o.facing_glyph?' '+o.facing_glyph:'')+(o.tier?' · '+o.tier+' confidence':'')+(o.reason==='model_and_light_pair_agree'?' · light pair agrees':'');}
+  root.VehicleFacing={VERSION,LEGACY,SIZE,OFFSETS,fingerprint,lampPairs,circularError,decode,classify,fastClassify,estimate,prepare,createPreparer,qualityGate,CropOrientation,description};
 })(globalThis);

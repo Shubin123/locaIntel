@@ -36,17 +36,18 @@ const server=http.createServer((req,res)=>{
   const origin=deployed||`http://127.0.0.1:${server.address().port}/`;await page.goto(origin);
   await page.waitForFunction(()=>{if(!data)return false;const c=displayedCamera(data.cameras[0]);return c.detections.length===5&&c.detections.every(d=>d.orientation?.model_ran)&&!facingAnalyzer.running;},null,{timeout:180000});
   let coverage=await page.evaluate(()=>{const c=displayedCamera(data.cameras[0]);return {cars:c.detections.length,ran:c.detections.filter(d=>d.orientation.model_ran).length,abstained:c.detections.filter(d=>d.orientation.quality_abstention).length,backend:facingAnalyzer.backend};});
-  assert.equal(coverage.ran,5);assert.equal(coverage.abstained,2);assert.equal(coverage.backend,expectedBackend);console.log('Facing coverage:',coverage);
-  assert.equal(await page.evaluate(()=>displayedCamera(data.cameras[0]).detections.filter(d=>d.orientation.state==='estimated').length),0,'a single screenshot never confirms facing');
-  // Controlled confidence fixture tests temporal plumbing, not model accuracy.
-  // Per-frame GPU coverage above uses the real production model.
+  assert.equal(coverage.ran,5);assert.equal(coverage.abstained,1,'only the sub-8×6-pixel box abstains');assert.equal(coverage.backend,expectedBackend);console.log('Facing coverage:',coverage);
+  const single=await page.evaluate(()=>displayedCamera(data.cameras[0]).detections.map(d=>({state:d.orientation.state,tier:d.orientation.tier,version:d.orientation.version})));
+  assert.equal(single.filter(o=>o.state==='estimated'&&['high','medium','low'].includes(o.tier)&&o.version==='drivebc-facing-v3').length,4,'every car at least 8×6 px, including the clipped one, gets a tiered single-photo estimate');
+  // Archived results from the retired CFV cascade still go through two-screenshot
+  // confirmation. This fixture checks that plumbing, not model accuracy.
   await page.evaluate(async()=>{
     pairCapture.pause();facingAnalyzer.isPaused=()=>true;localFacingQueue.isPaused=()=>true;localFacingQueue.pause();await photoArchive.chain;
     const camera=data.cameras[0],current=archiveMetadata.get(camera.id+':'+camera.hash),blob=await photoArchive.photo(camera.hash),bitmap=await createImageBitmap(blob),canvas=document.createElement('canvas');canvas.width=bitmap.width;canvas.height=bitmap.height;
     const g=canvas.getContext('2d');g.drawImage(bitmap,0,0);bitmap.close();g.fillStyle='#818181';g.fillRect(10,10,15,15);
     const previousBlob=await new Promise(r=>canvas.toBlob(r,'image/png')),previousHash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await previousBlob.arrayBuffer())),v=>v.toString(16).padStart(2,'0')).join('');
     await photoArchive.saveFrame(camera,{hash:previousHash,blob:previousBlob,width:640,height:400},{observedAt:current.observedAt-5000,analysisMode:'published',detections:camera.detections,counts:camera.counts,analysis:{}});
-    const manifest=await (await fetch('models/vehicle-facing-v1.json')).json(),logits=Array.from({length:8},(_,i)=>i===0?8:-5);
+    const manifest={model:'CFV fixture',views:['front','front_left','left_side','rear_left','rear','rear_right','right_side','front_right'],angle_convention:'CFV relative view'},logits=Array.from({length:8},(_,i)=>i===0?8:-5);
     for(const hash of [previousHash,camera.hash])for(let i=0;i<3;i++)await photoArchive.saveOrientation(camera.id+':'+hash,i,{...VehicleFacing.classify(logits,0,manifest,{type:'none'},{logits,angle:0}),fingerprint:VehicleFacing.fingerprint(camera.detections[i]),model_ran:true,backend:'webgpu',fixture:true});
     scheduleTemporal(current);queueViewPaint();
   });
@@ -86,6 +87,6 @@ const server=http.createServer((req,res)=>{
   assert(await page.locator('#model-cache-updates').textContent().then(t=>t.includes('Verified local cache')),'offline retry reloads verified model weights from browser cache');
   assert(!network.some(r=>/^https?:/.test(r.url)&&r.method!=='GET'),'no photo/evidence uploads');
   const shellPhotos=await page.evaluate(async()=>{const keys=await caches.keys(),urls=[];for(const k of keys.filter(k=>k.startsWith('locaintel-shell-')))urls.push(...(await(await caches.open(k)).keys()).map(r=>r.url));return urls.filter(u=>/\/frames\//.test(u));});assert.deepEqual(shellPhotos,[],'photos stored only in IndexedDB, never shell cache');
-  console.log('Exact YOLO boxes, 5/5 model runs, quality abstentions, two-screenshot confirmation, reference editing/reload, mobile layout, paired offline reload, automatic local missed-photo retry and no uploads with host stopped: passed.');
+  console.log('Exact YOLO boxes, 5/5 model runs, 4 tiered estimates + 1 tiny abstention, legacy two-screenshot confirmation, reference editing/reload, mobile layout, paired offline reload, automatic local missed-photo retry and no uploads with host stopped: passed.');
  }finally{await browser?.close();if(server.listening)await new Promise(r=>server.close(r));}
 })().catch(error=>{console.error(error);process.exitCode=1;});

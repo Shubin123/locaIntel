@@ -15,19 +15,15 @@ APP_FILES = (
     'index.html', 'style.css', 'app.js', 'sources.js', 'motion.js', 'detector.js',
     'monitor.js', 'smooth.js', 'temporal.js', 'orientation.js', 'road.js',
     'heading.js', 'paired-facing.js', 'capture-pair.js', 'facing-cache.js', 'sw.js',
+    'routes.js', 'routes-ui.js',
     'orientation-worker.js', 'detect-worker.js', 'road-worker.js', 'inference-runtime.js',
 )
 MODEL_FILES = (
     'README.md', 'CFV-LICENSE', 'TIMM-LICENSE', 'SegFormer-LICENSE',
     'paired-facing-v1.json', 'paired-facing-training-v1.json',
-    'vehicle-facing-v1.json', 'vehicle-facing-v2.json', 'facing-training-v2.json',
+    'vehicle-facing-v3.json', 'facing-training-v3.json', 'drivebc-facing-v3.onnx',
     'webgl-v1.json', 'road-v1.json', 'yolo11n.onnx', 'yolo11n-webgl.onnx',
     'segformer-b0-road-256.onnx', 'segformer-b0-road-256-webgl.onnx',
-    'cfv-mobilenet-facing-v2.onnx', 'cfv-convnext-facing-int8.onnx',
-    'cfv-convnext-facing-fp16.onnx', 'cfv-convnext-facing-batch2-fp16.onnx',
-    'cfv-convnext-facing-batch2-fp32.onnx',
-    *('cfv-facing-fp32-weights-%02d.bin' % i for i in range(5)),
-    *('cfv-%s-cars%d.onnx' % (kind, cars) for kind in ('fast', 'gpu', 'gpu32') for cars in (2, 4, 8)),
 )
 VENDOR_FILES = (
     'leaflet.js', 'leaflet.css', 'leaflet-LICENSE', 'leaflet-heat.js', 'leaflet-heat-LICENSE',
@@ -37,7 +33,7 @@ VENDOR_FILES = (
 )
 VENDOR_IMAGES = ('images/layers.png', 'images/layers-2x.png', 'images/marker-icon.png',
                  'images/marker-icon-2x.png', 'images/marker-shadow.png')
-CAMERA_FIELDS = frozenset(('id', 'name', 'region', 'highway', 'caption', 'image', 'source', 'lat', 'lon'))
+CAMERA_FIELDS = frozenset(('id', 'name', 'region', 'highway', 'caption', 'image', 'source', 'lat', 'lon', 'orientation'))
 LATEST_FIELDS = frozenset(('storage_mode', 'generated', 'cameras', 'catalog_size', 'errors', 'model', 'schema_version'))
 
 
@@ -79,6 +75,9 @@ def camera_catalog(value):
         raise ValueError('Expected a nonempty camera metadata catalog')
     result, ids = [], set()
     for camera in value:
+        if isinstance(camera, dict):
+            # Look direction (N, SE, …) lets browsers turn facing into a compass heading.
+            camera = {**camera, 'orientation': camera.get('orientation') or ''}
         if not isinstance(camera, dict) or set(camera) != CAMERA_FIELDS:
             raise ValueError('Only camera catalog metadata fields may be published')
         for field in CAMERA_FIELDS - {'lat', 'lon'}:

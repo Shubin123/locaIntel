@@ -159,20 +159,50 @@ Browser temporal analysis compares three distinct saved frames using native-reso
 
 Temporal evidence, frame hashes, observation windows, state counts and unmatched arrivals/departures are stored with each analyzed photo and pruned with it. The explorer's **Saved motion evidence** panel exports the selected camera's log as JSON; historical exports exclude observations after the shared cursor. Existing heat maps show sampled occupancy, while supported vectors show individual image-space movement.
 
-### Single-photo facing from isolated cars
+### Vehicle facing on every car
 
-The **Estimated vehicle facing** pane uses a newly trained compact MobileNetV3 car-view model, with the pretrained [CFV ConvNeXt-Small model](https://huggingface.co/fort-cyber/Car-orientation-image) checking difficult crops. The fast model learns from labeled isolated CFV crops and low-resolution/lighting augmentations; it checks the crop and its mirror in one batch. Both tiers retain angle, mirror and paired-headlight/taillight safeguards. It can estimate facing toward/away from the camera and show approximate cyan `Est. ↘` image-facing text on supported views even when the source cadence cannot establish movement. The heatmap can filter estimated cars facing toward or away from each camera at the timeline cursor. Green motion vectors and moving/stationary counts continue to require temporal evidence. A facing estimate never changes a car's movement state.
+The **Vehicle facing** widget gives every detected car, truck and bus at least 8×6 source pixels a facing estimate (toward the camera, away from it, or a side view with the nose direction on the image), with a **high / medium / low** confidence tier. On 1,298 sampled DriveBC frames (3,906 vehicles), the browser policy produces an estimate for **99.9%** of vehicles; the previous CFV cascade abstained on **82%** of them (crop-size gates, mirror disagreement and ambiguous scores).
 
-Select a vehicle in the explorer to inspect the actual enlarged crop, source-pixel dimensions, view score, mirror agreement and lamp markers. Low-resolution/clipped crops, ambiguous heads, unstable mirrored views and contradictory lamp evidence abstain. Scores are uncalibrated; this car-photo model has no measured DriveBC accuracy, and other vehicle types remain unsupported. Facing results are saved with exact frame/crop fingerprints, restored on reload, included in the camera JSON evidence export, and shown during timeline/hover playback.
+The old model was trained only on street-level CFV car photos and got just **50–53%** of front/rear/side right on elevated DriveBC views. The new model (`models/drivebc-facing-v3.onnx`, MobileNetV3, ~16 MiB) is adapted to DriveBC:
 
-After 12 training epochs, the shipped cascade improved eight-view accuracy on 4,960 held-out CFV test crops from **90.24% to 91.19%** at 160px, and **85.26% to 88.57%** at 40px. These are CFV results, not measured DriveBC accuracy. The compact model takes ~4–5 ms per crop+mirror pair on the tested Apple GPU; difficult crops still need a ~45 ms full check. None of 16 sampled DriveBC crops qualified for the strict fast route. See [full measurements and limitations](web/models/README.md#accuracy-and-latency-measurements).
+1. 474 hand-labeled DriveBC crops from 241 cameras (`pipeline/data/drivebc-facing-labels.json`, visible side only; unclear crops were left out).
+2. A frozen DINOv2-base + linear teacher (81% held-out) soft-labels 3,428 unlabeled DriveBC crops.
+3. The student trains on CFV (8 views + angle), the hand labels and the pseudo-labels together.
 
-Facing first uses a compact ~16 MiB FP32 model on GPU. Difficult crops load the full-resolution 96 MiB FP16 GPU, 192 MiB FP32 GPU or 55 MiB CPU checker on demand. WebGPU is attempted first, including adapters without FP16 support; CPU is used when the browser has no usable adapter or GPU initialization/inference fails, and the UI shows the reason. Weights are downloaded once, checksum verified and cached separately from photo storage. Origin storage usage includes it. **Analyze each car crop** pauses/resumes new facing work; the power slider controls inference idle time. Queued work also pauses in hidden tabs and history review. See [model provenance, validation and rebuild instructions](web/models/README.md#single-crop-vehicle-facing).
+Camera-grouped 5-fold cross-validation (no camera in both train and test; the teacher for each fold sees only that fold's training labels):
 
+| | Front/rear/side accuracy |
+| --- | --- |
+| Previous CFV model | 50% |
+| DriveBC-adapted student (all vehicles) | **74%** |
+| High tier (36% of vehicles) | 90% |
+| Medium tier (40%) | 71% |
+| Low tier (24%) | 55% |
+
+The tier thresholds are chosen on held-out predictions, so treat low-confidence results as guesses. The crop and its mirror run as one batch-2 WebGPU dispatch (~4 ms per vehicle on the test Mac; WASM fallback). Clipped crops and paired lamps that contradict the model lower the tier by one step. Facing describes appearance, not measured movement.
+
+Grow the dataset and re-measure:
+
+```bash
+python -m pipeline.facing_coverage collect --count 300   # adds DriveBC frames + YOLO boxes to .cache/drivebc-facing
+python -m pipeline.facing_coverage coverage              # replays the browser policy on every vehicle
+python -m pipeline.train_drivebc_facing --folds 5 --distill   # cross-validation (needs transformers, timm, CFV data)
+python -m pipeline.train_drivebc_facing --final --distill && python -m pipeline.export_drivebc_facing
+```
+
+### Vehicle routes through time
+
+The **Vehicle routes** widget links sightings of the same vehicle across cameras. Each vehicle's facing plus the camera's look direction (catalog `orientation`, or "looking north" in the caption) gives a compass heading. A sighting is linked to one at the next camera along that heading when:
+
+- the colour profile and vehicle class agree;
+- the implied speed is 20–140 km/h within 45 minutes;
+- the link is mutual-best, with no near-equal rival.
+
+Chains of links form routes drawn on the map, coloured by recency, with crop thumbnails for each hop. Flow arrows show each camera's dominant compass headings. Choose a **Corridor** (a highway) so its cameras refresh together; the window follows the shared timeline cursor. These are appearance-based guesses, not plate reads. Common white, black and grey vehicles are weak evidence, so dashed lines mark low-confidence links.
 
 ### GPU acceleration and road-aligned direction
 
-Detection, road segmentation and car facing now select WebGPU automatically where supported, with WASM fallback and visible backend/timing status. The compact model batches both views and the full-resolution CFV GPU checker keeps both verification passes; identical crop pixels across refreshed photos reuse existing facing results. Road-supported and selected cars are prioritized. GPU jobs use shorter idle gaps under the same power slider; hidden tabs and history review still pause new work.
+Detection, road segmentation and vehicle facing select WebGPU automatically where supported, with WASM fallback and visible backend/timing status. Identical crop pixels across refreshed photos reuse existing facing results. Road-supported and selected cars are prioritized. GPU jobs use shorter idle gaps under the same power slider; hidden tabs and history review still pause new work.
 
 A compact SegFormer model predicts road surface on fresh source images, so the road overlay and road-supported map metric work alongside live browser YOLO. General road direction combines road-mask centerlines, supported vehicle corridors and consistent crop-facing estimates. Cyan **Road est.** labels are approximate image directions; green motion vectors still require measured temporal evidence. Ambiguous intersections and conflicting axes abstain. Road results are cached with each photo and restored at the shared timeline cursor. Model provenance, numerical validation, measured GPU/CPU timings and the road model's research/evaluation terms are documented in [the model notes](web/models/README.md#gpu-execution-and-fast-road-context).
 
@@ -181,6 +211,9 @@ A compact SegFormer model predicts road surface on fresh source images, so the r
 When a browser has no working WebGPU, vehicle detection and road segmentation now run on WebGL before falling back to CPU (on the test Mac: ~1.6× and ~2.4× faster than WASM, with matching outputs). Status lines show **GPU / WebGL**. Car facing still uses the CPU in that case. Details, validation and rebuild steps: [WebGL fallback](web/models/README.md#webgl-fallback-browsers-without-webgpu).
 
 ## Multi-car GPU inference batches
+
+> **Facing model v3:** the slider still sets how many cars share one facing dispatch. The DriveBC-adapted model takes a dynamic batch of crop/mirror pairs, so the static 2/4/8-car cascade graphs described below were removed.
+
 
 The **GPU inference batching** slider under Device power budget selects **Off,
 2, 4, or 8 cars** per inference call. Four cars is the default. This controls real
@@ -261,6 +294,9 @@ npm test
 ```
 
 ## Complete facing coverage and spatial direction evidence
+
+> **Superseded for facing by v3** (see *Vehicle facing on every car*). Only boxes under 8×6 pixels abstain now; clipped crops get a lower confidence tier instead of abstaining. The spatial-direction material below still applies.
+
 
 The browser now runs the facing model on **every valid YOLO car box** on viewed
 feeds. Tiny and frame-edge crops keep their numerical diagnostics but still
@@ -347,6 +383,9 @@ is separately checked against the real crops above. Spatial fusion does not
 have a labeled DriveBC accuracy benchmark.
 
 ## Facing across cached screenshots
+
+> **Legacy:** two-screenshot confirmation required matching screenshots within 15 s, which left most live vehicles unresolved. It now applies only to archived results from the retired CFV cascade. v3 estimates show a confidence tier from a single photo instead.
+
 
 Facing confirmation now requires **at least two distinct screenshots from the
 same camera**, observed no more than 15 seconds apart. Every valid YOLO car crop
@@ -506,3 +545,4 @@ The broader all-angle accuracy is not comparable to the earlier class-center
 paired-view benchmark. One hardware run verifies this scale, not arbitrary data
 sizes or all devices. The complete local report is
 `.cache/facing-verification/report.json`; raw predictions remain alongside it.
+When a browser has no working WebGPU, vehicle detection and road segmentation now run on WebGL before falling back to CPU (on the test Mac: ~1.6× and ~2.4× faster than WASM, with matching outputs). Status lines show **GPU / WebGL**. Vehicle facing uses the CPU in that case (~16 MiB model). Details, validation and rebuild steps: [WebGL fallback](web/models/README.md#webgl-fallback-browsers-without-webgpu).

@@ -36,7 +36,7 @@ def catalog(client):
         path.write_text(response.content.decode('utf-8-sig'))
     return [dict(id=r['id'], name=r['camName'], region=r['region_name'], highway=r['highway_number'],
                  caption=r['caption'], image=r['links_imageURL'], source=r['links_camDetailsPage'],
-                 lat=float(r['latitude']), lon=float(r['longitude']))
+                 lat=float(r['latitude']), lon=float(r['longitude']), orientation=r.get('orientation') or None)
             for r in csv.DictReader(io.StringIO(path.read_text()))]
 
 
