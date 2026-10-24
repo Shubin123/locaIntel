@@ -868,4 +868,9 @@ async function restoreLocalArchive(){
   const cameras=rows.map(row=>({...row.camera,hash:row.hash,observed:new Date(row.observedAt).toISOString(),detections:SpatialHeading.frameDetections(row),counts:row.browserResult?.counts||row.counts||{},analysis:row.analysis||{},frame:'frames/'+row.cameraId+'.jpg'}));
   apply({cameras,generated:new Date(Math.max(...rows.map(r=>r.observedAt))).toISOString(),catalog_size:cameras.length,model:'Saved browser analysis',errors:[]},Monitoring.patternsAt([...archiveMetadata.values()],Date.now()));await loadSavedVisibleSources();return true;
 }
-if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(error=>console.warn('Offline shell unavailable',error));
+if('serviceWorker'in navigator){
+  // When an updated worker takes over a tab that was running older scripts, reload once.
+  const hadController=!!navigator.serviceWorker.controller;let reloaded=false;
+  navigator.serviceWorker.addEventListener('controllerchange',()=>{if(hadController&&!reloaded){reloaded=true;location.reload();}});
+  navigator.serviceWorker.register('sw.js').then(r=>r.update()).catch(error=>console.warn('Offline shell unavailable',error));
+}
