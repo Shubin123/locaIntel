@@ -240,5 +240,5 @@
     for(const c of cams.values()){const order=c.bins.map((n,i)=>[n,i]).sort((a,b)=>b[0]-a[0]);c.dominant=order[0][0]?{direction:NAMES[order[0][1]],bearing:order[0][1]*45,share:order[0][0]/c.headed}:null;c.secondary=order[1][0]?{direction:NAMES[order[1][1]],bearing:order[1][1]*45,share:order[1][0]/c.headed}:null;}
     return [...cams.values()];
   }
-  root.VehicleRoutes={VERSION,lookBearing,relativeHeading,heading,distance,bearing,describePixels,describe,colourName,similarity,sightings,link,routes,chance,handoffs,handoffChance,journeys,trackMatches,tracks,flowSeries,flows,compassName};
+  root.VehicleRoutes={VERSION,lookBearing,relativeHeading,heading,distance,bearing,captured,describePixels,describe,colourName,similarity,sightings,link,routes,chance,handoffs,handoffChance,journeys,trackMatches,tracks,flowSeries,flows,compassName};
 })(globalThis);

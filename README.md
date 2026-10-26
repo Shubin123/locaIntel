@@ -205,6 +205,25 @@ Every refresh, the widget runs a **decoy test**: it repeats the linking with eac
 
 Measured on Hwy 1 in the Lower Mainland (98 cameras, 40 rounds at 45 s, `python -m pipeline.route_survey` then `DECOYS=20 node scripts/route-survey.cjs .cache/route-survey/1.jsonl`): most cameras refresh only every ~10 minutes, and the same vehicle is rarely photographed at two cameras. Over 357 frames and 1,633 sightings (74% with a heading), the linker found **17** links, while 30 decoy runs averaged **13.6** (range 7–21): not distinguishable from chance. Reliable route tracking needs cameras that refresh every few seconds. On DriveBC stills, same-camera tracks and the direction-of-travel series are the dependable "through time" signals.
 
+### Own-vehicle GPS log (tracking evaluation set)
+
+The **GPS drive log** widget records your own drive so you can label your own car in camera frames. These labels form a ground-truth set for the same-camera tracks and camera-to-camera routes above.
+
+- **Explicit start/stop, own device and vehicle only.** Start stays disabled until you confirm that the device and vehicle are yours. Nothing logs before **Start** or after **Stop**. A page closed mid-drive does not resume; its drive ends at the last fix.
+- **Fixes.** `watchPosition` runs with high accuracy and no cached positions. It saves one timestamped fix at most every 3 s, with accuracy, altitude, speed and heading. If the watch goes quiet (stationary in a queue), the logger asks for a fix directly.
+- **Screen Wake Lock.** Phones pause background tabs, so the page keeps the screen awake while logging. The lock is requested again when the tab returns to the front. If the browser refuses it, logging continues and the status says to keep the screen on.
+- **Storage and export.** Fixes stay in IndexedDB (`locaintel-gps-v1`), separate from photo history and its retention limits, until you export or delete them. Each drive exports as GPX 1.1 (accuracy, speed and heading in a `li:` extension) or CSV. GPX/CSV from this app or another logger can be imported, so you can log on a phone and match on the computer that sampled the cameras. Re-importing the same export adds nothing. Geolocation and Wake Lock need HTTPS, which GitHub Pages provides (or localhost).
+- **Matching.** Each saved frame's upstream capture time (DriveBC's `Expires` header minus 1 s) is looked up in your track. Fixes up to 30 s apart are interpolated. Fixes worse than ±50 m are ignored, and so are frames with only a fetch time, which can lag the capture by minutes. A frame is listed when your car was within 150/250/400 m and in front of the camera's look direction. Your travel direction against that look direction gives the expected side: rear when driving the way the camera looks, front when driving toward it.
+- **Labels.** Pick your car's crop, or **Not visible**. A label keeps the detection index and box, and its `sighting` key (`frame key:index`) joins `VehicleRoutes.sightings`, so tracker output can be scored directly. **Export evaluation set** writes labels, unlabeled matches and every camera you passed as JSON.
+- **Replay the Day.** DriveBC keeps about 24 hours of images per camera. Each pass links to the camera's DriveBC page until then. Browsers cannot read the replay listing (no CORS header), so a local helper fetches the frames nearest each pass from the export:
+
+```sh
+python -m pipeline.gps_replay ~/Downloads/locaintel-own-vehicle-20261026T210000.json
+# → .cache/gps-replay/<camera>/<UTC stamp>.jpg and manifest.json; car_expected marks frames captured while you were in view
+```
+
+Most DriveBC cameras refresh every few minutes, so a 10-second pass often falls between frames. Sampling the corridor in the app during the drive gives more matches. Position and timing errors of a few seconds can still put a different car where yours was expected, so the labels are your call, not the GPS's. `node --test tests/gps.test.cjs` covers throttling, wake-lock re-acquisition, start/stop, storage, GPX/CSV round trips, interpolation, view geometry and the export; the browser E2E logs a short drive with emulated geolocation.
+
 ### GPU acceleration and road-aligned direction
 
 Detection, road segmentation and vehicle facing select WebGPU automatically where supported, with WASM fallback and visible backend/timing status. Identical crop pixels across refreshed photos reuse existing facing results. Road-supported and selected cars are prioritized. GPU jobs use shorter idle gaps under the same power slider; hidden tabs and history review still pause new work.
