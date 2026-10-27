@@ -192,6 +192,23 @@ python -m pipeline.train_drivebc_facing --folds 5 --distill   # cross-validation
 python -m pipeline.train_drivebc_facing --final --distill && python -m pipeline.export_drivebc_facing
 ```
 
+#### Lane context (measured, not used)
+
+Cars in the same lane on one camera travel the same way, so their visible sides should agree. In the hand labels they do: cars less than one car-width apart across the image share front / rear / side 67% of the time, against 39% by chance, and cars 4–8 widths apart (across the median or on a cross street) only 11% of the time. `pipeline/lane_context.py` learns how a neighbor's facing predicts a car's own at each lateral distance (in car widths, so it holds from near to far) and combines that with the crop model's scores. Every score it uses comes from a cross-validation model that never saw that camera; the combination's strength is fitted on the other folds.
+
+| Neighbors used | Crop model | With lane context |
+| --- | --- | --- |
+| Other cars in the frame (97% of labeled cars have some) | 74.7% | 74.9% (2 cars changed, 1 of them fixed) |
+| Plus 1,423 cars from up to 5 later frames of each camera | 74.7% | 74.7% (strength fitted to 0) |
+
+It does not help, because the crop model's mistakes follow the lane: when the model gets a car wrong, its same-lane neighbors vote for the same wrong side 68 times and for the truth 39 times. Errors come from the camera's viewpoint, which every car in that lane shares, so neighbors add little independent evidence. Restricting to the same or adjacent lane, or weighting each neighbor or each lane band separately, did not change this. Full numbers: `docs/benchmarks/2026-10-27-lane-context.json`. Lane context would need evidence that does not come from the same crop model, such as one hand label per lane or measured motion of a tracked car. The later frames were collected at night, with about one car per frame; daytime history may be worth re-measuring:
+
+```bash
+python -m pipeline.train_drivebc_facing --folds 5 --distill --output .cache/facing-lanes   # adds neighbor scores and fold models
+python -m pipeline.lane_context --collect 7 --minutes 10   # optional: later frames of the labeled cameras
+python -m pipeline.lane_context --score-history --report lane-context.json
+```
+
 ### Vehicle routes through time
 
 The **Vehicle routes** widget turns each vehicle's facing plus the camera's look direction into a compass heading. The look direction comes from the published catalog `orientation`, or "looking north" in the caption. It shows three things:

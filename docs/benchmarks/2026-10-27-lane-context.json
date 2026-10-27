@@ -1,0 +1,124 @@
+{
+ "history_vehicles": 1423,
+ "same_frames": {
+  "labels": 657,
+  "cameras": 342,
+  "folds": 5,
+  "alphas": [
+   0.5,
+   0,
+   0,
+   0,
+   0
+  ],
+  "with_neighbors": 0.9680365296803652,
+  "accuracy": {
+   "crop_model": 0.7473363774733638,
+   "lane_context": 0.7488584474885844
+  },
+  "accuracy_with_neighbors": {
+   "crop_model": 0.7452830188679245,
+   "lane_context": 0.7468553459119497
+  },
+  "log_loss": {
+   "crop_model": 0.6209135649675139,
+   "lane_context": 0.6231201609376466
+  },
+  "changed": 2,
+  "fixed": 1,
+  "broken": 0,
+  "tiers": {
+   "crop_model": {
+    "high": {
+     "share": 0.5312024353120244,
+     "accuracy": 0.9054441260744985
+    },
+    "medium": {
+     "share": 0.3028919330289193,
+     "accuracy": 0.628140703517588
+    },
+    "low": {
+     "share": 0.1659056316590563,
+     "accuracy": 0.45871559633027525
+    }
+   },
+   "lane_context": {
+    "high": {
+     "share": 0.5357686453576864,
+     "accuracy": 0.9005681818181818
+    },
+    "medium": {
+     "share": 0.2937595129375951,
+     "accuracy": 0.6321243523316062
+    },
+    "low": {
+     "share": 0.1704718417047184,
+     "accuracy": 0.4732142857142857
+    }
+   }
+  }
+ },
+ "with_history": {
+  "labels": 657,
+  "cameras": 342,
+  "folds": 5,
+  "alphas": [
+   0,
+   0,
+   0,
+   0,
+   0
+  ],
+  "with_neighbors": 0.9726027397260274,
+  "accuracy": {
+   "crop_model": 0.7473363774733638,
+   "lane_context": 0.7473363774733638
+  },
+  "accuracy_with_neighbors": {
+   "crop_model": 0.7433489827856025,
+   "lane_context": 0.7433489827856025
+  },
+  "log_loss": {
+   "crop_model": 0.6209135649675139,
+   "lane_context": 0.6209135649675139
+  },
+  "changed": 0,
+  "fixed": 0,
+  "broken": 0,
+  "tiers": {
+   "crop_model": {
+    "high": {
+     "share": 0.5312024353120244,
+     "accuracy": 0.9054441260744985
+    },
+    "medium": {
+     "share": 0.3028919330289193,
+     "accuracy": 0.628140703517588
+    },
+    "low": {
+     "share": 0.1659056316590563,
+     "accuracy": 0.45871559633027525
+    }
+   },
+   "lane_context": {
+    "high": {
+     "share": 0.5312024353120244,
+     "accuracy": 0.9054441260744985
+    },
+    "medium": {
+     "share": 0.3028919330289193,
+     "accuracy": 0.628140703517588
+    },
+    "low": {
+     "share": 0.1659056316590563,
+     "accuracy": 0.45871559633027525
+    }
+   }
+  }
+ },
+ "shared_errors": {
+  "model_wrong": 123,
+  "neighbors_vote_truth": 39,
+  "neighbors_vote_model": 68
+ }
+}

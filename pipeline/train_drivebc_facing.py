@@ -193,7 +193,7 @@ def main():
         fold_of = {c: i % args.folds for i, c in enumerate(cameras)}
         base = FastFacing(); base.load_state_dict(torch.load(args.init, map_location='cpu', weights_only=True)); base.to(device)
         predictions = [None] * len(rows); baseline = predict_groups(base, rows, images, device)
-        teacher_pred = np.zeros((len(rows), 3))
+        teacher_pred = np.zeros((len(rows), 3)); context = []
         if args.distill:
             labelled = {r['file'] + str(r['box']) for r in rows}
             pool = [r for r in pool_items() if r['file'] + str(r['box']) not in labelled]
@@ -211,6 +211,12 @@ def main():
             model = fit(train, images, cfv, device, args.epochs, args.steps, args.seed + k, args.init, pseudo)
             for i, pr in zip(test, predict_groups(model, [rows[i] for i in test], images, device)):
                 predictions[i] = pr.tolist()
+            if args.distill:
+                # Unlabeled vehicles on this fold's cameras, predicted by a model that never saw
+                # those cameras: the neighbor context for pipeline.lane_context.
+                held = [r for r in pool if fold_of.get(r['camera']) == k]
+                context += [{**r, 'probs': pr.tolist()} for r, pr in zip(held, predict_groups(model, held, images, device))]
+            torch.save(model.state_dict(), args.output / f'fold-{k}.pt')
             print('fold', k, 'done', flush=True)
         truth = np.array([GROUPS[r['group']] for r in rows]); pred = np.array(predictions)
         report = {'labels': len(rows), 'cameras': len(cameras), 'folds': args.folds,
@@ -223,7 +229,7 @@ def main():
             report['curve'].append({'min_confidence': t, 'coverage': float(keep.mean()),
                                     'accuracy': float((pred[keep].argmax(1) == truth[keep]).mean()) if keep.any() else None})
         report.update(select_policy(pred, truth))
-        (args.output / 'crossval.json').write_text(json.dumps({**report, 'predictions': predictions}, indent=1))
+        (args.output / 'crossval.json').write_text(json.dumps({**report, 'predictions': predictions, 'context': context, 'fold_of': fold_of}, indent=1))
         print(json.dumps(report, indent=1))
     if args.final:
         pseudo = None
