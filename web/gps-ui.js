@@ -50,7 +50,9 @@
       node('span',[`${s.fixes||0} fix${s.fixes===1?'':'es'}`,metres(G.trackLength(own)),s.imported&&'imported',s.interrupted&&'page closed while logging'].filter(Boolean).join(' · ')));
     const actions=node('div',undefined,'gps-actions'),file=s.id.replace(/[^\w.-]+/g,'_');
     const button=(text,fn)=>{const b=node('button',text);b.type='button';b.onclick=fn;return b;};
-    actions.append(button('GPX',()=>download(`locaintel-${file}.gpx`,G.gpx(own,{name:s.name||s.id}),'application/gpx+xml')),button('CSV',()=>download(`locaintel-${file}.csv`,G.csv(own),'text/csv')),
+    // Export what is stored now, not the list from the last repaint, so the newest fix is included.
+    const saved=async(write,ext,type)=>{try{download(`locaintel-${file}.${ext}`,write(await store.fixes(s.id)),type);}catch(error){fail(error);}};
+    actions.append(button('GPX',()=>saved(f=>G.gpx(f,{name:s.name||s.id}),'gpx','application/gpx+xml')),button('CSV',()=>saved(G.csv,'csv','text/csv')),
       button('Delete',async()=>{if(logger.session?.id===s.id||!confirm('Delete this drive and its own-car labels from this browser?'))return;try{await store.remove(s.id);await reload();}catch(error){fail(error);}}));
     actions.lastChild.disabled=logger.session?.id===s.id;item.append(actions);return item;
   }
@@ -90,7 +92,8 @@
   function schedule(){clearTimeout(paintTimer);paintTimer=setTimeout(render,250);}
 
   $('gps-own').addEventListener('change',status);
-  $('gps-start').onclick=async()=>{if(!$('gps-own').checked)return;message='';try{await logger.start();await reload();}catch(error){fail(error);}};
+  // Drives exist only in this browser until exported; ask it not to evict them under storage pressure.
+  $('gps-start').onclick=async()=>{if(!$('gps-own').checked)return;message='';navigator.storage?.persist?.().catch(()=>{});try{await logger.start();await reload();}catch(error){fail(error);}};
   $('gps-stop').onclick=async()=>{try{await logger.stop();}catch(error){fail(error);}await reload();};
   $('gps-radius').addEventListener('change',schedule);
   $('gps-import').addEventListener('change',async event=>{
@@ -98,8 +101,8 @@
     try{const parsed=G.parseTrack(await file.text(),{name:file.name});await store.importFixes(parsed,{name:file.name});message=`Imported ${parsed.length} fixes from ${file.name}.`;await reload();status();}
     catch(error){fail(error);}finally{event.target.value='';}
   });
-  $('gps-export').onclick=()=>{
-    const r=radius(),cams=catalog.length?catalog:data?.cameras||[];
+  $('gps-export').onclick=async()=>{
+    await reload();const r=radius(),cams=catalog.length?catalog:data?.cameras||[];
     const set=G.evaluationSet({sessions,labels:[...labels.values()],frames:G.frames([...archiveMetadata.values()],fixes,{radius:r}),passes:G.passes(cams,fixes,{radius:r})});
     download(`locaintel-own-vehicle-${new Date().toISOString().slice(0,19).replace(/[-:]/g,'')}.json`,JSON.stringify(set,null,1)+'\n','application/json');
   };

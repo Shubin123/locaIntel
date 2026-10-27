@@ -115,6 +115,13 @@ const server=http.createServer((req,res)=>{
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'GPS widget fits a phone screen');
   await page.reload();await page.waitForFunction(()=>window.gpsLog);
   assert.deepEqual(await page.evaluate(async()=>[(await gpsLog.store.sessions()).length,(await gpsLog.store.labels()).length]),[1,1],'GPS drive and label survive an offline reload');
+  // A second offline drive, exported straight after a fix: the file includes it even before the list repaints.
+  await page.locator('#gps-own').check();await page.locator('#gps-start').click();
+  await page.waitForFunction(()=>gpsLog.logger.fixes>=1&&document.querySelector('#gps-sessions .gps-session')?.dataset.key===gpsLog.logger.session.id,null,{timeout:15000});
+  await new Promise(r=>setTimeout(r,3100));await context.setGeolocation({latitude:49.003,longitude:-123,accuracy:5});await page.waitForFunction(()=>gpsLog.logger.fixes>=2,null,{timeout:15000});
+  const fresh=await saved(page.locator('#gps-sessions .gps-session button',{hasText:'CSV'}).first());
+  assert.equal(fresh.trim().split('\n').length-1,await page.evaluate(()=>gpsLog.store.fixes(gpsLog.logger.session.id).then(f=>f.length)),'export includes the newest fix');
+  await page.locator('#gps-stop').click();await page.waitForFunction(()=>!gpsLog.logger.active);
   console.log('GPS log:',{fixes:drive.fixes.length,wakeLock,labels:evaluation.labels.length,passes:evaluation.passes.length});
   assert(!network.some(r=>/^https?:/.test(r.url)&&r.method!=='GET'),'no photo/evidence uploads');
   const shellPhotos=await page.evaluate(async()=>{const keys=await caches.keys(),urls=[];for(const k of keys.filter(k=>k.startsWith('locaintel-shell-')))urls.push(...(await(await caches.open(k)).keys()).map(r=>r.url));return urls.filter(u=>/\/frames\//.test(u));});assert.deepEqual(shellPhotos,[],'photos stored only in IndexedDB, never shell cache');
