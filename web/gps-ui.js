@@ -9,10 +9,18 @@
   const metres=m=>m<1000?Math.round(m)+' m':(m/1000).toFixed(1)+' km';
   const FACING={toward_camera:'front expected (driving toward camera)',away_from_camera:'rear expected (driving away)',image_left:'side expected (moving left)',image_right:'side expected (moving right)'};
   const WAKE={held:'screen kept awake',idle:'',released:'screen lock dropped while hidden; keep this tab in front',unsupported:'this browser cannot keep the screen awake; keep it on with this tab in front'};
+  // A page cannot force the permission prompt: once location is blocked, the browser refuses without asking.
+  const IOS=/iP(hone|ad|od)/.test(navigator.userAgent)||navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1;
+  const BLOCKED=IOS?'Location is blocked, so iOS will not ask. In Settings › Privacy & Security › Location Services, turn Location Services on and set Safari Websites (or Chrome) to While Using the App with Precise Location on. Then in Safari tap aA › Website Settings › Location › Ask, reload, and tap Start.'
+    :'Location is blocked for this site, so the browser will not ask. Allow location in the site settings next to the address bar, reload, and tap Start.';
+  let permission='';
+  navigator.permissions?.query?.({name:'geolocation'}).then(p=>{const update=()=>{permission=p.state;status();};p.onchange=update;update();}).catch(()=>{});
   const radius=()=>Number($('gps-radius').value);
   const logger=new G.GpsLogger({store,onChange:state=>{
     if(state.last&&!fixes.includes(state.last)){fixes.push(state.last);if(fixes.length>1&&fixes.at(-2).t>state.last.t)fixes.sort((a,b)=>a.t-b.t);}
-    status();schedule();if(!reloadTimer)reloadTimer=setTimeout(()=>{reloadTimer=null;reload();},4000);
+    status();schedule();
+    // Stopped, or refused permission: show the final drive list now.
+    if(!state.active)reload();else if(!reloadTimer)reloadTimer=setTimeout(()=>{reloadTimer=null;reload();},4000);
   }});
   function fail(error){message=error?.message||String(error);status();}
   function download(name,text,type){
@@ -21,8 +29,10 @@
   }
   function status(){
     const s=logger.state(),wake=WAKE[s.wakeLock]??`screen lock unavailable (${s.wakeLock.replace(/^error: /,'')}); keep the screen on`;
-    $('gps-status').textContent=s.active?['Logging',s.fixes+(s.fixes===1?' fix':' fixes'),s.last?`last ${clock(s.last.t)}${s.last.accuracy!=null?' ±'+Math.round(s.last.accuracy)+' m':''}`:'waiting for the first fix',wake,s.error].filter(Boolean).join(' · '):s.error||message||'Not logging.';
-    $('gps-status').classList.toggle('weak',!!(s.error||!s.active&&message||s.active&&s.wakeLock!=='held'));
+    const error=/permission denied/.test(s.error)?BLOCKED:s.error,coarse=s.last?.accuracy>1000&&(IOS?'approximate location only: turn on Precise Location':'approximate location only');
+    $('gps-status').textContent=s.active?['Logging',s.fixes+(s.fixes===1?' fix':' fixes'),s.last?`last ${clock(s.last.t)}${s.last.accuracy!=null?' ±'+Math.round(s.last.accuracy)+' m':''}`:'waiting for the first fix',coarse,wake,error].filter(Boolean).join(' · ')
+      :error||message||(permission==='denied'?BLOCKED:permission==='prompt'?'Not logging. Start will ask to use your location.':'Not logging.');
+    $('gps-status').classList.toggle('weak',!!(s.error||coarse||!s.active&&(message||permission==='denied')||s.active&&s.wakeLock!=='held'));
     $('gps-start').disabled=s.active||!$('gps-own').checked;$('gps-stop').disabled=!s.active;$('gps-own').disabled=s.active;
   }
   async function reload(){
@@ -92,8 +102,9 @@
   function schedule(){clearTimeout(paintTimer);paintTimer=setTimeout(render,250);}
 
   $('gps-own').addEventListener('change',status);
+  // Start requests location first, synchronously in this tap, so the browser can show its prompt.
   // Drives exist only in this browser until exported; ask it not to evict them under storage pressure.
-  $('gps-start').onclick=async()=>{if(!$('gps-own').checked)return;message='';navigator.storage?.persist?.().catch(()=>{});try{await logger.start();await reload();}catch(error){fail(error);}};
+  $('gps-start').onclick=async()=>{if(!$('gps-own').checked)return;message='';const started=logger.start();navigator.storage?.persist?.().catch(()=>{});try{await started;await reload();}catch(error){fail(error);}};
   $('gps-stop').onclick=async()=>{try{await logger.stop();}catch(error){fail(error);}await reload();};
   $('gps-radius').addEventListener('change',schedule);
   $('gps-import').addEventListener('change',async event=>{

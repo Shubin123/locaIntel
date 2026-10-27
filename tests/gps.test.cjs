@@ -65,12 +65,28 @@ test('the wake lock is requested again when the page returns, never twice at onc
   const none=logger(scope(),{wakeLock:undefined});await none.log.start();assert.equal(none.log.state().wakeLock,'unsupported');
 });
 
+test('start asks for location and the screen lock within the calling tap, before the session is saved',async()=>{
+  const G=scope(),{log,geo,lock,store}=logger(G);
+  const started=log.start();
+  assert.equal(geo.watchers.size,1,'Safari only prompts for a request made in the tap');assert.equal(lock.requests,1);
+  geo.emit(position(T0+500));
+  const session=await started;await log.stop();
+  assert.equal((await store.fixes(session.id)).length,1,'a fix arriving before the session write is still saved');assert.equal((await store.sessions())[0].fixes,1);
+});
+
 test('a quiet watch is topped up with a direct fix request; permission denial ends the session',async()=>{
   const G=scope(),{log,geo,tick,store}=logger(G);await log.start();
   tick(3000);assert.equal(geo.current.length,0);tick(3000);assert.equal(geo.current.length,1);assert.equal(geo.current[0].enableHighAccuracy,true);
   geo.fail({code:3,message:'timeout'});assert.equal(log.active,true);assert.match(log.state().error,/Waiting/);
-  const id=log.session.id;await geo.fail({code:1,message:'denied'});
+  geo.emit(position(T0+6000));const id=log.session.id;await geo.fail({code:1,message:'denied'});
   assert.equal(log.active,false);assert.equal(log.state().error,'Location permission denied');assert.notEqual((await store.sessions()).find(s=>s.id===id).end,null);
+});
+
+test('a drive refused before its first fix leaves no empty session',async()=>{
+  const G=scope(),{log,geo,store}=logger(G);
+  const started=log.start();const refused=geo.fail({code:1,message:'User denied Geolocation'});await started;await refused;
+  assert.equal(log.active,false);assert.equal(geo.cleared.length,1);assert.deepEqual(plain(await store.sessions()),[]);
+  await log.start();assert.equal(log.active,true,'Start can be tapped again after allowing location');
 });
 
 test('sessions persist, interrupted ones close at their last fix, imports deduplicate and deleting a drive removes its fixes and labels',async()=>{

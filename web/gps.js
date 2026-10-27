@@ -86,14 +86,18 @@
       if(this.session)return this.session;
       if(!this.geolocation)throw Error('This browser has no location access');
       const start=this.now(),session={id:'drive-'+iso(start).replace(/[-:]/g,'').replace(/\.\d+/,''),start,end:null,last:null,fixes:0};
-      await this.store.begin(session);
       Object.assign(this,{session,last:null,lastSeen:start,fixes:0,error:''});
-      const options={enableHighAccuracy:true,maximumAge:0,timeout:30000};
+      // Store writes are queued in order, so fixes saved later land after the session record.
+      const begun=this.store.begin(session),options={enableHighAccuracy:true,maximumAge:0,timeout:30000};
+      // Ask for location (and the screen lock) before any await, inside the tap that called start,
+      // so the browser treats it as the user's request and can show its permission prompt.
       this.watch=this.geolocation.watchPosition(p=>this.position(p),e=>this.failed(e),options);
       // watchPosition can go quiet while stationary; ask directly so a queue still gets fixes.
       this.timer=this.setTimer(()=>{if(this.session&&this.now()-this.lastSeen>this.intervalMs*1.5)this.geolocation.getCurrentPosition(p=>this.position(p),e=>this.failed(e),{...options,maximumAge:this.intervalMs});},this.intervalMs);
       this.document?.addEventListener?.('visibilitychange',this.visibility);
-      await this.lock();this.changed();return session;
+      const locked=this.lock();
+      try{await begun;}catch(error){if(this.session===session)this.halt();throw error;}
+      await locked;this.changed();return session;
     }
     lock(){
       if(!this.wakeLock||this.sentinel||this.document?.visibilityState==='hidden')return Promise.resolve();
@@ -121,15 +125,19 @@
     failed(error){
       // PERMISSION_DENIED ends the session; timeouts and lost signal keep watching.
       this.error=error?.code===1?'Location permission denied':error?.code===3?'Waiting for a GPS fix…':'Location unavailable: '+(error?.message||'unknown error');
-      if(error?.code===1)return this.stop();this.changed();
+      // A drive refused before its first fix is not kept as an empty session.
+      if(error?.code===1)return this.stop({discard:!this.fixes});this.changed();
     }
-    async stop(){
-      const session=this.session;if(!session)return null;
+    halt(){
       this.session=null;this.geolocation.clearWatch(this.watch);this.watch=null;this.clearTimer(this.timer);this.timer=null;
       this.document?.removeEventListener?.('visibilitychange',this.visibility);
       const sentinel=this.sentinel;this.sentinel=null;this.wake=this.wakeLock?'idle':'unsupported';
-      try{await sentinel?.release();}catch(_){}
-      const ended=await this.store.finish(session.id,this.now());this.changed();return ended;
+      return Promise.resolve(sentinel?.release()).catch(()=>{});
+    }
+    async stop({discard=false}={}){
+      const session=this.session;if(!session)return null;
+      await this.halt();
+      const ended=discard?await this.store.remove(session.id).then(()=>null):await this.store.finish(session.id,this.now());this.changed();return ended;
     }
   }
 
