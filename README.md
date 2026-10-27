@@ -192,6 +192,15 @@ python -m pipeline.train_drivebc_facing --folds 5 --distill   # cross-validation
 python -m pipeline.train_drivebc_facing --final --distill && python -m pipeline.export_drivebc_facing
 ```
 
+#### Training with MLX on Apple silicon
+
+Add `--backend mlx` to either training command to run the student's training steps in [MLX](https://github.com/ml-explore/mlx) on the Mac's GPU (`pip install mlx`; `pipeline/mlx_facing.py`). The network mirrors timm's MobileNetV3-Large layer for layer, weights convert exactly both ways, and the result comes back as the usual PyTorch model, so cross-validation, export and the browser model are unchanged. Losses, sampling, augmentation, AdamW, the cosine schedule and gradient clipping match the PyTorch loop; its gradients agree with a float64 reference to 5×10⁻⁴ (PyTorch's own float32: 3×10⁻³).
+
+- **Neural Engine:** neither MLX nor PyTorch can train on it; Apple exposes it only for running finished Core ML models. Both backends train on the GPU.
+- **Speed (M4, 24 GB):** about 1.9 s per training step in MLX against 0.69 s with PyTorch MPS. This network is mostly depthwise convolutions, MLX's slower path, so PyTorch stays the default.
+- **MLX before 0.32 computes wrong input gradients for strided depthwise convolutions** (0.29.3 is the last release for Python 3.9). The port computes those four layers as a stride-1 convolution sampled every second pixel, which is the same function with correct gradients; `tests/test_mlx_facing.py` checks this against PyTorch.
+- MLX's freed-buffer cache is capped at 1 GB during training. Uncapped, it grew to 15 GB and pushed a 24 GB Mac into swap (30× slower steps); a step needs about 7.6 GB.
+
 #### Lane context (measured, not used)
 
 Cars in the same lane on one camera travel the same way, so their visible sides should agree. In the hand labels they do: cars less than one car-width apart across the image share front / rear / side 67% of the time, against 39% by chance, and cars 4–8 widths apart (across the median or on a cross street) only 11% of the time. `pipeline/lane_context.py` learns how a neighbor's facing predicts a car's own at each lateral distance (in car widths, so it holds from near to far) and combines that with the crop model's scores. Every score it uses comes from a cross-validation model that never saw that camera; the combination's strength is fitted on the other folds.

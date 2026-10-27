@@ -7,6 +7,8 @@ with hand-labeled DriveBC crops (front / rear / side group loss). With
 labels) soft-labels every other DriveBC crop for the student. `--folds`
 runs camera-grouped cross-validation so no camera appears in both train and
 test; `--final` trains on every label and writes the checkpoint for export.
+`--backend mlx` runs the training steps in MLX on the Apple-silicon GPU
+(pipeline/mlx_facing.py) instead of PyTorch.
 """
 import argparse
 import json
@@ -171,6 +173,20 @@ def select_policy(pred, truth, high=.9, medium=.8):
     return {'thresholds': {'high': hi, 'medium': med}, 'tiers': tiers}
 
 
+def select_backend(name):
+    """The student's training function: PyTorch fit, or the MLX port with the same signature."""
+    if name == 'torch':
+        return fit
+    try:
+        from . import mlx_facing
+    except ImportError:
+        raise SystemExit('--backend mlx needs MLX on Apple silicon: pip install mlx')
+    if not mlx_facing.available():
+        raise SystemExit('--backend mlx needs a Metal GPU')
+    print('training with MLX on the Apple GPU', flush=True)
+    return mlx_facing.fit
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--labels', default=ROOT / 'pipeline' / 'data' / 'drivebc-facing-labels.json')
@@ -182,8 +198,11 @@ def main():
     p.add_argument('--epochs', type=int, default=8)
     p.add_argument('--steps', type=int, default=60)
     p.add_argument('--seed', type=int, default=731)
+    p.add_argument('--backend', choices=['torch', 'mlx'], default='torch',
+                   help='train the student with PyTorch, or with MLX on the Apple-silicon GPU (pipeline.mlx_facing)')
     args = p.parse_args()
     device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
+    train = select_backend(args.backend)
     rows, images = load_labels(args.labels)
     cfv_images, cfv_angles, identities = load_crops(ROOT / '.cache' / 'cfv-data' / 'train.zip')
     cfv = (cfv_images, cfv_angles, np.arange(len(cfv_images)))
@@ -201,14 +220,14 @@ def main():
             pool_feats = teacher_features(pool, images, device, args.output / 'teacher-features.npz')
         for k in range(args.folds):
             test = [i for i, r in enumerate(rows) if fold_of[r['camera']] == k]
-            train = [r for r in rows if fold_of[r['camera']] != k]
+            train_rows = [r for r in rows if fold_of[r['camera']] != k]
             pseudo = None
             if args.distill:
-                probe = fit_probe(feats[[i for i, r in enumerate(rows) if fold_of[r['camera']] != k]], np.array([GROUPS[r['group']] for r in train]))
+                probe = fit_probe(feats[[i for i, r in enumerate(rows) if fold_of[r['camera']] != k]], np.array([GROUPS[r['group']] for r in train_rows]))
                 keep = [i for i, r in enumerate(pool) if fold_of.get(r['camera']) != k]
                 pseudo = ([pool[i] for i in keep], probe(pool_feats[keep]))
                 teacher_pred[[i for i, r in enumerate(rows) if fold_of[r['camera']] == k]] = probe(feats[[i for i, r in enumerate(rows) if fold_of[r['camera']] == k]])
-            model = fit(train, images, cfv, device, args.epochs, args.steps, args.seed + k, args.init, pseudo)
+            model = train(train_rows, images, cfv, device, args.epochs, args.steps, args.seed + k, args.init, pseudo)
             for i, pr in zip(test, predict_groups(model, [rows[i] for i in test], images, device)):
                 predictions[i] = pr.tolist()
             if args.distill:
@@ -238,7 +257,7 @@ def main():
             pool = [r for r in pool_items() if r['file'] + str(r['box']) not in labelled]
             probe = fit_probe(teacher_features(rows, images, device, args.output / 'teacher-features.npz'), np.array([GROUPS[r['group']] for r in rows]))
             pseudo = (pool, probe(teacher_features(pool, images, device, args.output / 'teacher-features.npz')))
-        model = fit(rows, images, cfv, device, args.epochs, args.steps, args.seed, args.init, pseudo)
+        model = train(rows, images, cfv, device, args.epochs, args.steps, args.seed, args.init, pseudo)
         torch.save(model.cpu().state_dict(), args.output / 'student.pt')
         print('saved', args.output / 'student.pt')
 
