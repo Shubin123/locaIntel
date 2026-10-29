@@ -15,7 +15,7 @@ APP_FILES = (
     'index.html', 'style.css', 'app.js', 'sources.js', 'motion.js', 'detector.js',
     'monitor.js', 'smooth.js', 'temporal.js', 'orientation.js', 'road.js',
     'heading.js', 'paired-facing.js', 'capture-pair.js', 'facing-cache.js', 'sw.js',
-    'routes.js', 'routes-ui.js', 'gps.js', 'gps-ui.js',
+    'routes.js', 'routes-ui.js', 'matcher.js', 'gps.js', 'map.js', 'track-ui.js',
     'orientation-worker.js', 'detect-worker.js', 'road-worker.js', 'inference-runtime.js',
 )
 MODEL_FILES = (

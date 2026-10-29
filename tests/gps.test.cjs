@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const {IDBFactory,IDBKeyRange}=require('fake-indexeddb');
-function scope(){const ctx=vm.createContext({indexedDB:new IDBFactory(),IDBKeyRange});for(const f of ['temporal','routes','gps'])vm.runInContext(fs.readFileSync(`web/${f}.js`,'utf8'),ctx);return ctx.GpsLog;}
+function scope(){const ctx=vm.createContext({indexedDB:new IDBFactory(),IDBKeyRange});for(const f of ['temporal','routes','matcher','gps'])vm.runInContext(fs.readFileSync(`web/${f}.js`,'utf8'),ctx);return Object.assign(ctx.GpsLog,{M:ctx.VehicleMatcher,ctx});}
 const plain=v=>JSON.parse(JSON.stringify(v));
 const T0=Date.UTC(2026,9,26,21,0,0);
 // Southbound at ~80 km/h on lon -123: a fix every 3 s, 66.7 m apart, passing the camera at i≈16.7.
@@ -123,51 +123,57 @@ test('third-party GPX 1.0 and CSV tracks import; untimed points are skipped',()=
   assert.throws(()=>G.parseTrack('a,b\n1,2',{name:'bad.csv'}),/lat, lon and time/);assert.throws(()=>G.parseTrack('<gpx></gpx>',{name:'empty.gpx'}),/No timestamped positions/);
 });
 
-test('positions interpolate between close fixes, never across long gaps or coarse fixes',()=>{
-  const G=scope(),fixes=drive();
-  const p=G.positionAt(fixes,T0+4500);assert.ok(Math.abs(p.lat-(49.01-.0009))<1e-9);assert.equal(Math.round(p.course),180);assert.ok(Math.abs(p.speed-22.2)<.1);assert.equal(p.session,'drive-a');
-  const gap=[fixes[0],{...fixes[1],t:T0+60000}];assert.equal(G.positionAt(gap,T0+30000),null);
-  assert.equal(G.positionAt(gap,T0+4000).lat,49.01,'within 5 s of the edge fix');assert.equal(G.positionAt(fixes,T0-6000),null);
-  const stopped=[fixes[0],{...fixes[0],t:T0+3000,heading:null}];assert.equal(G.positionAt(stopped,T0+1500).course,180,'stationary pair keeps the reported heading');
-  const coarse=G.frames([row(north,T0+46000)],fixes.map(f=>({...f,accuracy:80})));assert.deepEqual(plain(coarse),[]);
+
+test('with a relevance filter only fixes near a camera are stored, and a drive that stored none is not kept',async()=>{
+  const G=scope(),index=G.M.cameraIndex([north]),{log,geo,store}=logger(G,{filter:()=>new G.M.RelevanceFilter(index)});
+  await log.start({vehicle:'v2'});assert.equal(log.session.vehicle,'v2');
+  for(const [i,f]of drive('x',60).entries())geo.emit(position(T0+3000*i,f.lat+.01,f.lon));
+  const kept=await store.fixes(log.session.id),near=drive('x',60).map(f=>({...f,lat:f.lat+.01})).filter(f=>VehicleDistance(G,north,f)<=500);
+  assert.equal(log.state().seen,60);assert.equal(log.fixes,kept.length);assert.equal(kept.length,near.length+2,'in range plus one boundary fix each side');
+  assert.ok(kept.every(f=>VehicleDistance(G,north,f)<570));await log.stop();assert.equal((await store.sessions())[0].fixes,kept.length);
+  const far=logger(G,{filter:()=>new G.M.RelevanceFilter(index)});far.tick(60000);await far.log.start();far.geo.emit(position(T0,50,-123));
+  assert.equal(far.log.fixes,0);assert.equal(await far.log.stop(),null);assert.equal((await far.store.sessions()).length,1,'only the first drive remains');
+});
+function VehicleDistance(G,a,b){return G.ctx.VehicleRoutes.distance(a,b);}
+
+test('version 1 storage upgrades: drives and labels move to the first vehicle profile',async()=>{
+  const factory=new IDBFactory(),open=indexedDB=>new Promise((resolve,reject)=>{const r=indexedDB.open('locaintel-gps-v1',1);r.onupgradeneeded=()=>{const db=r.result;db.createObjectStore('sessions',{keyPath:'id'});db.createObjectStore('fixes',{keyPath:['session','t']});db.createObjectStore('labels',{keyPath:'key'});};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});
+  const old=await open(factory);await new Promise(done=>{const tx=old.transaction(['sessions','fixes','labels'],'readwrite');tx.objectStore('sessions').put({id:'drive-a',start:T0,end:T0+1000,fixes:1});tx.objectStore('fixes').put(drive('drive-a',1)[0]);tx.objectStore('labels').put({key:'238:abc',session:'drive-a',detection:0,sighting:'238:abc:0'});tx.oncomplete=done;});old.close();
+  const ctx=vm.createContext({indexedDB:factory,IDBKeyRange});for(const f of ['temporal','routes','matcher','gps'])vm.runInContext(fs.readFileSync(`web/${f}.js`,'utf8'),ctx);
+  const store=new ctx.GpsLog.GpsStore();
+  assert.deepEqual(plain((await store.vehicles()).map(v=>[v.id,v.name])),[['vehicle-1','My vehicle']]);
+  assert.equal((await store.sessions())[0].vehicle,'vehicle-1');assert.equal((await store.fixes('drive-a')).length,1);
+  assert.deepEqual(plain((await store.labels()).map(l=>[l.key,l.vehicle,l.frame,l.sighting])),[['vehicle-1|238:abc','vehicle-1','238:abc','238:abc:0']]);
 });
 
-test('expected facing follows travel direction relative to the camera look direction',()=>{
-  const G=scope();
-  assert.equal(G.expectedFacing(0,180),'toward_camera');assert.equal(G.expectedFacing(0,10),'away_from_camera');assert.equal(G.expectedFacing(0,90),'image_right');
-  assert.equal(G.expectedFacing(90,0),'image_left');assert.equal(G.expectedFacing(null,0),null);assert.equal(G.expectedFacing(0,null),null);
+test('vehicle profiles are independent: imports join a vehicle, trimming keeps a subset and deleting a vehicle removes its drives and labels',async()=>{
+  const G=scope(),store=new G.GpsStore();
+  assert.deepEqual(plain((await store.vehicles()).map(v=>v.id)),['vehicle-1'],'a fresh store starts with one profile');
+  await store.saveVehicle(G.vehicle('vehicle-2',{name:'Van',bodyType:'van',created:Date.now()+1}));
+  await store.importFixes(drive('mine',5),{name:'mine.gpx'});await store.importFixes(drive('van',6),{name:'van.csv',vehicle:'vehicle-2'});
+  assert.deepEqual(plain((await store.sessions()).map(s=>[s.id,s.vehicle])),[['mine','vehicle-1'],['van','vehicle-2']]);
+  await store.trim('van',drive('van',6).slice(2,4));const van=(await store.sessions()).find(s=>s.id==='van');
+  assert.equal(van.fixes,2);assert.equal(van.trimmed,true);assert.deepEqual(plain((await store.fixes('van')).map(f=>f.t-T0)),[6000,9000]);
+  await store.saveLabel({key:'vehicle-2|f',vehicle:'vehicle-2',frame:'f',session:'van'});await store.saveLabel({key:'vehicle-1|f',vehicle:'vehicle-1',frame:'f',session:'mine'});
+  await store.removeVehicle('vehicle-2');
+  assert.deepEqual(plain((await store.vehicles()).map(v=>v.id)),['vehicle-1']);assert.deepEqual(plain((await store.sessions()).map(s=>s.id)),['mine']);
+  assert.equal((await store.fixes()).length,5);assert.deepEqual(plain((await store.labels()).map(l=>l.key)),['vehicle-1|f']);
 });
 
-test('saved frames match only when the capture time puts the car in front of the camera',()=>{
-  const G=scope(),fixes=drive(),far={...north,id:'200',lat:49.05};
-  const rows=[row(north,T0+46000),row(south,T0+46000),row(north,T0+60000),row(south,T0+60000),row(far,T0+46000),row(north,T0+46000+600000),
-    {...row(north,T0+45000),key:'fetch-only',sourceModified:null,observedAt:T0+46000},{...row(north,T0+101000),key:'implausible',observedAt:T0+40000},{...row({...north,lat:null},T0+46000),key:'no-location'}];
-  const found=G.frames(rows,fixes);
-  assert.deepEqual(plain(found.map(m=>m.key).sort()),['100:h'+(T0+46000),'101:h'+(T0+60000)]);
-  const approaching=found.find(m=>m.cameraId==='100');assert.equal(approaching.expectedFacing,'toward_camera');assert.equal(Math.round(approaching.distance),89);assert.equal(approaching.offAxis,0);
-  const leaving=found.find(m=>m.cameraId==='101');assert.equal(leaving.expectedFacing,'away_from_camera');assert.equal(Math.round(leaving.distance),222);
-  const unknownLook=G.frames([row({...north,orientation:'',caption:'Site'},T0+60000)],fixes);assert.equal(unknownLook.length,1,'no look direction: radius only');assert.equal(unknownLook[0].inView,null);assert.equal(unknownLook[0].expectedFacing,null);
-  assert.equal(G.frames(rows,fixes,{radius:80}).length,0);
-});
-
-test('camera passes list each in-view visit with closest approach and the 24-hour replay window',()=>{
-  const G=scope(),fixes=drive(),loop=[...fixes,...drive('drive-a',34).map(f=>({...f,t:f.t+600000}))];
-  const passes=G.passes([north,south,{...north,id:'far',lat:50}],fixes);
-  assert.deepEqual(plain(passes.map(p=>[p.cameraId,p.fixes,p.expectedFacing])),[['100',5,'toward_camera'],['101',4,'away_from_camera']]);
-  const p=passes[0];assert.equal(p.start,T0+39000);assert.equal(p.end,T0+51000);assert.equal(p.closest.t,T0+51000);assert.equal(Math.round(p.closest.distance),22);assert.equal(Math.round(p.closest.course),180);
-  assert.deepEqual(plain(p.replay),{page:'https://www.drivebc.ca/cameras/100',list:'https://www.drivebc.ca/api/webcams/100/replayTheDay/',availableUntil:T0+39000+86400000});
-  assert.equal(G.passes([north],loop).length,2,'a second pass ten minutes later is a separate visit');
-  assert.deepEqual(plain(G.passes([north],[])),[]);
-});
-
-test('own-car labels join tracker sightings and the evaluation export separates labeled, unlabeled and replay-only passes',()=>{
-  const G=scope(),fixes=drive(),frame={...row(north,T0+46000),facing:{byDetection:{0:{facing:'toward_camera'}}}},other=row(south,T0+60000);
-  const [m]=G.frames([frame],fixes),label=G.labelRecord(m,frame,0,T0+3600000);
-  assert.equal(label.sighting,frame.key+':0');assert.deepEqual(plain(label.box),[.4,.5,.5,.6]);assert.equal(label.modelFacing,'toward_camera');assert.equal(label.expectedFacing,'toward_camera');assert.equal(label.session,'drive-a');
-  assert.throws(()=>G.labelRecord(m,frame,1),/Not a vehicle/);
-  const hidden=G.labelRecord(m,frame,null,T0);assert.equal(hidden.detection,null);assert.equal(hidden.sighting,null);
-  const set=plain(G.evaluationSet({sessions:[{id:'drive-a',start:T0,end:T0+100000,fixes:34}],labels:[label],frames:G.frames([frame,other],fixes),passes:G.passes([north,south],fixes),generated:T0}));
-  assert.equal(set.format,'locaintel-own-vehicle-v1');assert.equal(set.labels.length,1);assert.equal(set.labels[0].capturedAt,'2026-10-26T21:00:46.000Z');
+const red=[.5,0,0,0,0,0,0,0,.1,.1,.2,.1,.4];
+test('labels join tracker sightings, and the export carries the profile, sightings, checks and replay-ready passes',()=>{
+  const G=scope(),M=G.M,fixes=drive(),camera=north,vehicle=G.vehicle('vehicle-1',{name:'Red sedan',bodyType:'sedan',colour:'red',references:[{id:'p',source:'photo',descriptor:red,thumb:'data:image/jpeg;base64,xyz'}]});
+  const frame={...row(camera,T0+46000),facing:{byDetection:{0:{state:'estimated',facing:'toward_camera',tier:'high'}}},routeFeatures:{byDetection:{0:red}}},other=row(south,T0+60000);
+  const result=M.track({vehicle,fixes,cameras:[north,south],rows:[frame,other],labels:[]}),seen=result.sightings.find(s=>s.key===frame.key);
+  const label=G.labelRecord(seen,frame,0,{vehicle:'vehicle-1',descriptor:[1,0,0,0,0,0,0,0,0,0,0,0,0],labeledAt:T0+3600000});
+  assert.equal(label.key,'vehicle-1|'+frame.key);assert.equal(label.frame,frame.key);assert.equal(label.sighting,frame.key+':0');assert.deepEqual(plain(label.box),[.4,.5,.5,.6]);
+  assert.equal(label.modelFacing,'toward_camera');assert.equal(label.expectedFacing,'toward_camera');assert.equal(label.session,'drive-a');assert.equal(label.exactTime,true);
+  assert.throws(()=>G.labelRecord(seen,frame,1),/Not a vehicle/);
+  const hidden=G.labelRecord(seen,frame,null,{labeledAt:T0});assert.equal(hidden.detection,null);assert.equal(hidden.sighting,null);assert.equal(hidden.descriptor,null);
+  const set=plain(G.exportSet({vehicle,sessions:[{id:'drive-a',vehicle:'vehicle-1',start:T0,end:T0+100000,fixes:34},{id:'other',vehicle:'vehicle-9',start:T0,end:T0,fixes:1}],labels:[label,{...label,key:'vehicle-9|x',vehicle:'vehicle-9'}],result,generated:T0}));
+  assert.equal(set.format,'locaintel-vehicle-track-v2');assert.equal(set.vehicle.name,'Red sedan');assert.deepEqual(set.vehicle.references,[{source:'photo',descriptor:red}],'no thumbnails leave in the export');
+  assert.equal(set.relevance.radiusMetres,500);assert.deepEqual(set.sessions.map(s=>s.id),['drive-a']);assert.equal(set.labels.length,1);assert.equal(set.labels[0].capturedAt,'2026-10-26T21:00:46.000Z');
   assert.deepEqual(set.unlabeled.map(u=>u.key),[other.key]);assert.equal(set.passes.length,2);assert.equal(set.passes[0].replay.availableUntil,'2026-10-27T21:00:39.000Z');
-  assert.equal(set.passes[0].closest.time,'2026-10-26T21:00:51.000Z');
+  assert.equal(set.passes[0].closest.time,'2026-10-26T21:00:51.000Z');assert.deepEqual(set.sightings.map(s=>[s.key,s.status]),[[other.key,'possible'],[frame.key,'confirmed']]);
+  assert.ok(set.checks.decoy&&set.checks.agreement);
 });

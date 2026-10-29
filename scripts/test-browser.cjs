@@ -57,7 +57,7 @@ const server=http.createServer((req,res)=>{
   await page.waitForFunction(()=>archiveMetadata.get(data.cameras[0].id+':'+data.cameras[0].hash)?.pairedFacing?.byFingerprint?.[VehicleFacing.fingerprint(data.cameras[0].detections[0])]?.paired?.state==='confirmed');
   await page.evaluate(async()=>{const c=data.cameras[0];await photoArchive.saveTemporal(c.id+':'+c.hash,{detections:[{label:'car',box:[.8,.8,.9,.9],motion:{state:'moving',vector:[.01,0],gap_seconds:1}}],log:{frameHashes:[c.hash],states:{moving:1,stationary:0,unknown:0},status:'test_stale'}});});
   assert.equal(await page.evaluate(()=>displayedCamera(data.cameras[0]).detections.length),5);
-  await page.locator('.heading-controls summary').click();
+  await page.locator('#tab-camera').click();await page.locator('.heading-controls summary').click();
   for(const y of ['0.55']){await page.locator('#reference-y1').fill(y);await page.locator('#reference-y2').fill(y);await page.locator('#reference-coordinates button').click();await page.waitForFunction(n=>directionReferences.get('238')?.vectors.length===n,y==='0.55'?1:2);}
   await page.locator('#draw-reference').click();await page.locator('#detail-picture').scrollIntoViewIfNeeded();const bounds=await page.locator('#detail-picture').boundingBox();
   await page.mouse.move(bounds.x+bounds.width*.2,bounds.y+bounds.height*.6);await page.mouse.down();await page.mouse.move(bounds.x+bounds.width*.7,bounds.y+bounds.height*.6,{steps:8});await page.mouse.up();
@@ -85,13 +85,18 @@ const server=http.createServer((req,res)=>{
   await page.waitForFunction(()=>[...archiveMetadata.values()].find(r=>r.cameraId==='missed-local')?.facing?.byDetection?.[0]?.state==='error',null,{timeout:15000});
   await page.waitForFunction(()=>[...archiveMetadata.values()].find(r=>r.cameraId==='missed-local')?.facing?.byDetection?.[0]?.model_ran===true,null,{timeout:180000});
   assert(await page.locator('#model-cache-updates').textContent().then(t=>t.includes('Verified local cache')),'offline retry reloads verified model weights from browser cache');
-  // GPS drive log: explicit start/stop, timestamped fixes, exports/import, own-car labels.
-  await page.locator('#gps-pane').scrollIntoViewIfNeeded();assert(await page.locator('#gps-start').isDisabled(),'logging needs the own-device confirmation');
+  // Vehicle tracking: explicit start/stop, only fixes near cameras stored, exports/import, labels.
+  await page.locator('#tab-track').click();await page.locator('#gps-pane').scrollIntoViewIfNeeded();assert(await page.locator('#gps-start').isDisabled(),'logging needs the own-device confirmation');
   assert.equal(await page.evaluate(()=>gpsLog.logger.active),false,'nothing logs before Start');
   await page.locator('#gps-own').check();await page.locator('#gps-start').click();
   await page.waitForFunction(()=>gpsLog.logger.fixes>=1,null,{timeout:15000});
   for(const latitude of [49.0015,49.001,49.0005]){await new Promise(r=>setTimeout(r,3100));await context.setGeolocation({latitude,longitude:-123,accuracy:5});}
   await page.waitForFunction(()=>gpsLog.logger.fixes>=4,null,{timeout:15000});
+  // Driving away: the first fix past 500 m is kept as the zone's edge, the next is never stored.
+  for(const latitude of [49.02,49.03]){await new Promise(r=>setTimeout(r,3100));await context.setGeolocation({latitude,longitude:-123,accuracy:5});}
+  await page.waitForFunction(()=>gpsLog.logger.state().last?.lat===49.03,null,{timeout:15000});
+  const kept=await page.evaluate(async()=>{await gpsLog.store.chain;return (await gpsLog.store.fixes(gpsLog.logger.session.id)).map(f=>f.lat);});
+  assert(kept.includes(49.02)&&!kept.includes(49.03)&&await page.evaluate(()=>gpsLog.logger.state().seen>gpsLog.logger.fixes),'only fixes near a camera, plus the edge fix, are stored: '+kept);
   const wakeLock=await page.evaluate(()=>gpsLog.logger.state().wakeLock);assert(/^(held|error: )/.test(wakeLock),'wake lock requested: '+wakeLock);
   await page.locator('#gps-stop').click();await page.waitForFunction(()=>!gpsLog.logger.active);
   const drive=await page.evaluate(async()=>{const [s]=await gpsLog.store.sessions(),fixes=await gpsLog.store.fixes(s.id);return {session:s,fixes};});
@@ -100,12 +105,14 @@ const server=http.createServer((req,res)=>{
   // A saved frame captured mid-drive, at a second camera on the same photo (no extra photo bytes).
   const capturedAt=Math.ceil((drive.fixes[1].t+1)/1000)*1000;
   await page.evaluate(async t=>{const c=data.cameras[0],blob=await photoArchive.photo(c.hash);await photoArchive.saveFrame({id:'gps-cam',name:'GPS fixture',lat:49,lon:-123},{hash:c.hash,blob,width:640,height:400,modified:new Date(t).toUTCString()},{observedAt:t+5000,analysisMode:'published',detections:c.detections,counts:c.counts,analysis:{}});},capturedAt);
-  await page.waitForFunction(()=>document.querySelectorAll('#gps-frames .gps-choice').length===5,null,{timeout:15000});
-  await page.locator('#gps-frames .gps-choice').first().click();await page.waitForFunction(()=>gpsLog.store.labels().then(l=>l.length===1));
-  assert.equal(await page.locator('#gps-frames .gps-choice').first().getAttribute('aria-pressed'),'true');
+  const sighting=page.locator('#gps-frames [data-key^="gps-cam:"]');
+  await page.waitForFunction(()=>document.querySelectorAll('#gps-frames [data-key^="gps-cam:"] .gps-choice').length===5,null,{timeout:15000});
+  await sighting.locator('.gps-choice[data-key="0"]').click();await page.waitForFunction(()=>gpsLog.store.labels().then(l=>l.length===1));
+  await page.waitForFunction(()=>document.querySelector('#gps-frames [data-key^="gps-cam:"] .gps-choice[data-key="0"]')?.getAttribute('aria-pressed')==='true');
+  assert(await page.evaluate(()=>gpsLog.store.labels().then(([l])=>Array.isArray(l.descriptor)&&l.vehicle==='vehicle-1')),'the marked vehicle becomes a colour reference');
   const saved=async(button)=>{const [file]=await Promise.all([page.waitForEvent('download'),button.click()]);return fs.readFileSync(await file.path(),'utf8');};
   const evaluation=JSON.parse(await saved(page.locator('#gps-export')));
-  assert.equal(evaluation.format,'locaintel-own-vehicle-v1');assert.equal(evaluation.labels.length,1);assert.equal(evaluation.labels[0].sighting,'gps-cam:'+payload.cameras[0].hash+':0');
+  assert.equal(evaluation.format,'locaintel-vehicle-track-v2');assert.equal(evaluation.relevance.radiusMetres,500);assert.equal(evaluation.labels.length,1);assert.equal(evaluation.labels[0].sighting,'gps-cam:'+payload.cameras[0].hash+':0');
   assert.equal(evaluation.labels[0].capturedAt,new Date(capturedAt).toISOString());assert(evaluation.passes.some(p=>p.cameraId==='238'&&p.replay.list.endsWith('/api/webcams/238/replayTheDay/')),'camera passes carry DriveBC replay links');
   const gpx=await saved(page.locator('#gps-sessions button',{hasText:'GPX'}).first()),csv=await saved(page.locator('#gps-sessions button',{hasText:'CSV'}).first());
   assert.equal((gpx.match(/<trkpt /g)||[]).length,drive.fixes.length);assert.equal(csv.trim().split('\n').length,drive.fixes.length+1);
@@ -115,8 +122,8 @@ const server=http.createServer((req,res)=>{
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'GPS widget fits a phone screen');
   await page.reload();await page.waitForFunction(()=>window.gpsLog);
   assert.deepEqual(await page.evaluate(async()=>[(await gpsLog.store.sessions()).length,(await gpsLog.store.labels()).length]),[1,1],'GPS drive and label survive an offline reload');
-  // A second offline drive, exported straight after a fix: the file includes it even before the list repaints.
-  await page.locator('#gps-own').check();await page.locator('#gps-start').click();
+  // A second offline drive near the camera, exported straight after a fix: the file includes it even before the list repaints.
+  await context.setGeolocation({latitude:49.0005,longitude:-123,accuracy:5});await page.locator('#gps-own').check();await page.locator('#gps-start').click();
   await page.waitForFunction(()=>gpsLog.logger.fixes>=1&&document.querySelector('#gps-sessions .gps-session')?.dataset.key===gpsLog.logger.session.id,null,{timeout:15000});
   await new Promise(r=>setTimeout(r,3100));await context.setGeolocation({latitude:49.003,longitude:-123,accuracy:5});await page.waitForFunction(()=>gpsLog.logger.fixes>=2,null,{timeout:15000});
   const fresh=await saved(page.locator('#gps-sessions .gps-session button',{hasText:'CSV'}).first());
@@ -125,6 +132,6 @@ const server=http.createServer((req,res)=>{
   console.log('GPS log:',{fixes:drive.fixes.length,wakeLock,labels:evaluation.labels.length,passes:evaluation.passes.length});
   assert(!network.some(r=>/^https?:/.test(r.url)&&r.method!=='GET'),'no photo/evidence uploads');
   const shellPhotos=await page.evaluate(async()=>{const keys=await caches.keys(),urls=[];for(const k of keys.filter(k=>k.startsWith('locaintel-shell-')))urls.push(...(await(await caches.open(k)).keys()).map(r=>r.url));return urls.filter(u=>/\/frames\//.test(u));});assert.deepEqual(shellPhotos,[],'photos stored only in IndexedDB, never shell cache');
-  console.log('Exact YOLO boxes, 5/5 model runs, 4 tiered estimates + 1 tiny abstention, legacy two-screenshot confirmation, reference editing/reload, mobile layout, paired offline reload, automatic local missed-photo retry, GPS drive log/labels/exports and no uploads with host stopped: passed.');
+  console.log('Exact YOLO boxes, 5/5 model runs, 4 tiered estimates + 1 tiny abstention, legacy two-screenshot confirmation, reference editing/reload, mobile layout, paired offline reload, automatic local missed-photo retry, vehicle tracking (only GPS near cameras stored), labels, exports and no uploads with host stopped: passed.');
  }finally{await browser?.close();if(server.listening)await new Promise(r=>server.close(r));}
 })().catch(error=>{console.error(error);process.exitCode=1;});

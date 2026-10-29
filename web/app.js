@@ -187,7 +187,8 @@ const browserDetector = new BrowserDetector({
   onResult: recordDetection,
   delayMs: powerProfile.inferenceDelay,
   isPaused: () => !isLive() || document.hidden,
-  isWanted: hash => isLive() && $('source-view').checked && detectionTargets().some(c => cameraSources.get(c.id)?.hash === hash)
+  // Imported replay frames and reference photos are requested by the tracker.
+  isWanted: hash => isLive() && ($('source-view').checked && detectionTargets().some(c => cameraSources.get(c.id)?.hash === hash) || !!window.trackingWants?.(hash))
 
 });
 function localAnalysis(c){const source=sourceEntry(c);if(!source?.hash)return null;const current=browserDetector.get(source.hash);if(current)return current;const saved=archiveMetadata.get(c.id+':'+source.hash);const result=saved?.analysisMode==='browser'&&saved.detectorVersion===browserDetector.modelVersion?{version:saved.detectorVersion,detections:saved.detections,counts:saved.counts,observed:new Date(saved.observedAt).toISOString()}:saved?.browserResult;if(result?.version===browserDetector.modelVersion&&Array.isArray(result.detections))return{...result,status:'ready',hash:source.hash};return null;}
@@ -340,8 +341,8 @@ function sourceLabel(c) {
 function visibleSourceCameras() {
   if(!isLive())return [];
   const rows = filteredCameras().sort($('sort').value === 'name' ? (a,b) => a.name.localeCompare(b.name) : $('sort').value === 'fresh' ? (a,b) => Date.parse(b.observed)-Date.parse(a.observed) : (a,b) => count(b)-count(a));
-  const selected = data?.cameras.find(c => c.id === selectedCamera);
-  return selected ? [selected,...rows.slice(0,limit)] : rows.slice(0,limit);
+  const selected = data?.cameras.find(c => c.id === selectedCamera), tracked = window.trackingCameras?.() || [];
+  return [...new Map([...(selected ? [selected] : []), ...tracked, ...rows.slice(0, limit)].map(c => [c.id, c])).values()];
 }
 async function loadVisibleSources(force = false) {
   if (!data || !isLive() || document.hidden || !$('source-view').checked) return [];
@@ -393,8 +394,9 @@ function notifyPane(key, label, version, badge, pane, sourceTime) {
 function filteredCameras() {
   if (!data) return [];
   const search = $('search').value.toLowerCase();
+  const view = $('map-view-only').checked && window.AppMap?.bounds();
   return viewCameras().filter(c => (!$('region').value || c.region === $('region').value) && (!$('route-highway').value || String(c.highway) === $('route-highway').value) &&
-    `${c.name} ${c.highway} ${c.caption}`.toLowerCase().includes(search));
+    (!view || !Number.isFinite(c.lat) || view.contains([c.lat, c.lon])) && `${c.name} ${c.highway} ${c.caption}`.toLowerCase().includes(search));
 }
 function age(c) {
   if(!c.observed)return 'Awaiting local analysis';
@@ -508,42 +510,73 @@ function renderDetail() {
   renderTimeline();
   notifyPane('detail', 'Camera explorer', [c.id, c.hash, c.analysis, c.detections, sample, selectedVehicle, $('vector-overlay').checked, $('vector-scale').value, $('heat-overlay').checked, $('road-overlay').checked, sourceEntry(original)?.hash, sourceEntry(original)?.error, localAnalysis(original)?.status], $('detail-updated'), $('detail-pane'), data.generated);
 }
+// The map is the base of the page: every catalog camera is pinned, whatever the
+// filters. Cameras in the current filter carry their sampled value; density is a layer.
+let mapFramed=false;
 function initMap() {
-  if (!window.L || map) return;
-  map = L.map('traffic-map', { scrollWheelZoom: false }).setView([53.1, -124.2], 5);
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' }).addTo(map);
-  markerLayer = L.layerGroup().addTo(map);
-  if (L.heatLayer) heatLayer = L.heatLayer([], { radius: 28, blur: 22, maxZoom: 10, minOpacity: .2, gradient: { .2: '#467bd0', .4: '#49c7ad', .6: '#e7e775', .8: '#f19a4b', 1: '#ed5252' } }).addTo(map);
+  if (map || !window.AppMap) return;
+  map = AppMap.init(); if (!map) return;
+  markerLayer = AppMap.layer('cameras'); heatLayer = AppMap.heat;
+  AppMap.onChange(kind => { if (kind === 'move') { if ($('map-view-only').checked) { limit = 24; render(); } } else { lastMapVersion = ''; queueViewPaint(); } });
+}
+function mapValue(c, metric) {
+  const facing=vehicles(c).filter(d=>d.orientation?.state==='estimated');
+  return c._analysisAvailable===false||!c.observed?null:metric.startsWith('facing_')?(facing.length?facing.filter(d=>d.orientation.facing===(metric==='facing_toward'?'toward_camera':'away_from_camera')).length:null):metric === 'road' ? (c.analysis?.road_model ? c.analysis.on_road : null) : metric === 'history' ? viewPatterns()?.cameras?.[c.id]?.mean_vehicles : metric === 'moving' ? motionCounts([c]).moving : count(c);
+}
+function pinStyle(value, inFilter, selected) {
+  if (selected) return { radius: 8, color: '#ffffff', weight: 2, fillColor: value > 0 ? '#b8ed86' : '#6f8490', fillOpacity: .95 };
+  if (!inFilter) return { radius: 3, color: '#4b5a62', weight: 1, fillColor: '#2c383f', fillOpacity: .5 };
+  return value > 0 ? { radius: 5, color: '#0b1115', weight: 1, fillColor: '#b8ed86', fillOpacity: .9 } : value === 0 ? { radius: 4, color: '#0b1115', weight: 1, fillColor: '#6f8490', fillOpacity: .9 } : { radius: 3.5, color: '#6f8490', weight: 1, fillColor: '#1b2a31', fillOpacity: .8 };
+}
+function pinPopup(id) {
+  const base = data?.cameras.find(c => c.id === id), shown = filteredCameras().find(c => c.id === id), c = shown ? displayedCamera(shown) : base, metric = $('map-metric').value, value = shown ? mapValue(c, metric) : null;
+  const content = node('div', undefined, 'pin-popup'); content.append(node('strong', base?.name || id), node('p', shown ? `${value == null ? 'Not analysed yet' : value + ' ' + (metric.startsWith('facing_') ? 'appearance-based facing estimates' : metric === 'road' ? 'road-supported vehicles' : metric === 'moving' ? 'motion-supported vehicles' : metric === 'history' ? 'average visible vehicles' : 'visible vehicles')} · ${age(c)}` : 'Outside the current filters', 'widget-note'));
+  const button = node('button', 'Inspect camera'); button.type = 'button'; button.onclick = () => showCamera(id); content.append(button); return content;
 }
 function renderMap(rows) {
   initMap();
-  const fresh = $('fresh-only').checked, metric = $('map-metric').value, now = currentTime();
-  const samples = rows.filter(c => !fresh || now - Date.parse(c.observed) < 3600000).map(c => {
-    const facing=vehicles(c).filter(d=>d.orientation?.state==='estimated');
-    const value = c._analysisAvailable===false?null:metric.startsWith('facing_')?(facing.length?facing.filter(d=>d.orientation.facing===(metric==='facing_toward'?'toward_camera':'away_from_camera')).length:null):metric === 'road' ? (c.analysis?.road_model ? c.analysis.on_road : null) : metric === 'history' ? viewPatterns()?.cameras?.[c.id]?.mean_vehicles : metric === 'moving' ? motionCounts([c]).moving : count(c);
-    return { c, value };
-  });
-  const mapVersion=signature([metric,fresh,timelineAt,samples.map(({c,value})=>[c.id,c.hash,value,Math.floor((now-Date.parse(c.observed))/60000)])]);
+  const fresh = $('fresh-only').checked, metric = $('map-metric').value, now = currentTime(), density = !!window.AppMap?.enabled('density');
+  const samples = rows.map(c => ({ c, value: !fresh || now - Date.parse(c.observed) < 3600000 ? mapValue(c, metric) : null })), byId = new Map(samples.map(s => [s.c.id, s]));
+  const cameras = (data?.cameras || []).filter(c => Number.isFinite(c.lat) && Number.isFinite(c.lon));
+  const mapVersion=signature([metric,fresh,density,timelineAt,selectedCamera,cameras.length,samples.map(({c,value})=>[c.id,c.hash,value,Math.floor((now-Date.parse(c.observed))/60000)])]);
   if(lastMapVersion===mapVersion)return;lastMapVersion=mapVersion;
   if (map) {
-    const wantedMarkers=new Set(samples.map(s=>s.c.id));for(const [id,marker]of markerNodes)if(!wantedMarkers.has(id)){markerLayer.removeLayer(marker);markerNodes.delete(id);}
-    const max = Math.max(1, ...samples.map(s => s.value));
-    heatLayer?.setLatLngs(samples.filter(s => s.value > 0).map(({ c, value }) => [c.lat, c.lon, value / max]));
-    for (const { c, value } of samples) {
-      const content = node('div'); content.append(node('strong', c.name), node('p', `${value==null?'Analysis unavailable':value} ${metric.startsWith('facing_')?'appearance-based facing estimates':metric === 'road' ? 'road-supported vehicles' : metric === 'moving' ? 'motion-supported' : metric === 'history' ? 'average visible vehicles' : 'visible vehicles'} · ${age(c)}`));
-      const button = node('button', 'Inspect camera'); button.onclick = () => { selectCamera(c.id); $('detail-pane').scrollIntoView({ behavior: 'smooth', block: 'center' }); }; content.append(button);
-      let marker=markerNodes.get(c.id);if(!marker){marker=L.circleMarker([c.lat,c.lon],{radius:4,color:value?'#b8ed86':'#92a2ac',weight:1,fillOpacity:.7}).bindPopup(content).addTo(markerLayer);markerNodes.set(c.id,marker);}else{marker.setLatLng([c.lat,c.lon]);marker.setStyle({color:value?'#b8ed86':'#92a2ac'});const old=marker.getPopup().getContent();if(old?.nodeType)SmoothUI.patch(old,content);else marker.setPopupContent(content);}
+    // Frame the catalog once, so every camera starts in view on any screen size.
+    if (!mapFramed && cameras.length) { mapFramed = true; AppMap.frame(cameras.map(c => [c.lat, c.lon]), { maxZoom: 8, padding: [12, 12] }); }
+    const wanted = new Set(cameras.map(c => c.id)); for (const [id, marker] of markerNodes) if (!wanted.has(id)) { markerLayer.removeLayer(marker); markerNodes.delete(id); }
+    for (const c of cameras) {
+      const s = byId.get(c.id), style = pinStyle(s?.value, !!s, c.id === selectedCamera);let marker = markerNodes.get(c.id);
+      if (!marker) { marker = L.circleMarker([c.lat, c.lon], { pane: 'cameras', ...style }).bindTooltip(c.name, { direction: 'top', offset: [0, -4] }).bindPopup(() => pinPopup(c.id)).addTo(markerLayer); markerNodes.set(c.id, marker); }
+      else marker.setStyle(style);
     }
+    const max = Math.max(1, ...samples.map(s => s.value || 0));
+    heatLayer?.setLatLngs(density ? samples.filter(s => s.value > 0).map(({ c, value }) => [c.lat, c.lon, value / max]) : []);
   } else {
-    $('traffic-map').hidden = true; $('map-fallback').hidden = false;
+    $('map').hidden = true; $('map-fallback').hidden = false;
     $('map-fallback').replaceChildren(node('p', 'Map library unavailable. Camera locations:', 'widget-note'), ...samples.slice(0, 20).map(({ c, value }) => {
-      const button = node('button', `${c.name} (${c.lat}, ${c.lon}) · ${value}`); button.onclick = () => selectCamera(c.id); return button;
+      const button = node('button', `${c.name} (${c.lat}, ${c.lon}) · ${value}`); button.onclick = () => showCamera(c.id); return button;
     }));
   }
-  const stale = samples.filter(({ c }) => now - Date.parse(c.observed) > 3600000).length;
-  $('map-caption').textContent = `${samples.length} sampled cameras · ${samples.filter(s=>s.value==null).length} without analysis · ${stale} over 60 minutes old. ${metric.startsWith('facing_')?'Appearance-based, camera-relative facing estimates at the cursor; no estimated speed or measured traffic flow. Unresolved cameras do not contribute.':metric === 'moving' ? 'Only motion-supported detections contribute; an empty heat layer means no qualifying measurements.' : 'Relative visible-vehicle density around camera locations. Brightness depends on camera coverage and field of view, not measured traffic flow.'}`;
-  notifyPane('map', 'Traffic heatmap', [metric, fresh, samples.map(({ c, value }) => [c.id, c.hash, value])], $('map-updated'), $('map-pane'), data.generated);
+  const stale = samples.filter(({ c }) => now - Date.parse(c.observed) > 3600000).length, analysed = samples.filter(s => s.value != null).length;
+  $('map-caption').textContent = density ? `Density of ${$('map-metric').selectedOptions[0].text.toLowerCase()} · ${analysed}/${samples.length} cameras in the filter analysed · ${stale} over 60 minutes old. ${metric.startsWith('facing_')?'Appearance-based, camera-relative facing estimates; no speed or measured traffic flow.':metric === 'moving' ? 'Only motion-supported detections contribute.' : 'Brightness depends on camera coverage and field of view, not measured traffic flow.'}` : `${cameras.length.toLocaleString()} cameras pinned · ${analysed} analysed in the current filter.`;
+  notifyPane('map', 'Map', [metric, fresh, density, samples.map(({ c, value }) => [c.id, c.hash, value])], $('map-updated'), null, data.generated);
 }
+// Panels beside the map. Opening the camera panel from a pin or a sighting also
+// brings it into view on a phone, where the panel sits below the map.
+function openPanel(name, { focus = false } = {}) {
+  for (const tab of document.querySelectorAll('[role=tab][data-panel]')) { const on = tab.dataset.panel === name; tab.setAttribute('aria-selected', String(on)); tab.tabIndex = on ? 0 : -1; if (on && focus) tab.focus(); }
+  for (const panel of document.querySelectorAll('.tab-panel')) panel.hidden = panel.id !== name + '-panel';
+}
+function showCamera(id) {
+  selectCamera(id); openPanel('camera'); lastMapVersion = ''; queueViewPaint();
+  if (matchMedia('(max-width: 900px)').matches) $('panel').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' });
+  else $('panel').scrollTop = 0;
+}
+for (const tab of document.querySelectorAll('[role=tab][data-panel]')) {
+  tab.addEventListener('click', () => openPanel(tab.dataset.panel));
+  tab.addEventListener('keydown', e => { const tabs = [...document.querySelectorAll('[role=tab][data-panel]')], i = tabs.indexOf(tab), next = e.key === 'ArrowRight' ? tabs[(i + 1) % tabs.length] : e.key === 'ArrowLeft' ? tabs[(i - 1 + tabs.length) % tabs.length] : null; if (next) { e.preventDefault(); openPanel(next.dataset.panel, { focus: true }); } });
+}
+
 function renderTrend(rows) {
   const activePatterns=viewPatterns();
   const hours = new Map((activePatterns?.hourly || []).map(h => [h.hour, h]));
@@ -578,7 +611,7 @@ function renderFeeds(rows) {
     details.append(node('div',`Facing: ${facing.filter(d=>d.orientation.facing==='toward_camera').length} toward · ${facing.filter(d=>d.orientation.facing==='away_from_camera').length} away · ${facing.filter(d=>d.orientation.facing?.startsWith('image_')).length} side${states.moving||states.stationary?` · motion ${states.moving} moving / ${states.stationary} stationary`:''}`,'facing-tag'));
     const sources=node('div',undefined,'camera-sources');for(const [text,url]of[['DriveBC camera',c.source],['Original image',c.image]])if(url)sources.append(link(text+' ↗',url));details.append(sources);
     details.append(node('div',sourceLabel(original),'source-status'));
-    const inspect=node('button','Inspect','inspect-button');inspect.onclick=()=>{selectCamera(c.id);$('detail-pane').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'center'});};inspect.title='Hover or focus a card to replay its saved frames';details.append(inspect,node('span',undefined,'update-badge'));
+    const inspect=node('button','Inspect','inspect-button');inspect.onclick=()=>showCamera(c.id);inspect.title='Hover or focus a card to replay its saved frames';details.append(inspect,node('span',undefined,'update-badge'));
     next.append(drawPicture(original),details);
     if(card)SmoothUI.patch(card,next);else card=next;
     installHoverPlayback(card,key);
@@ -661,7 +694,7 @@ async function refresh(fromSource = false) {
   } finally { refreshing = false; button.disabled = false; button.textContent = '↻ Refresh from DriveBC'; button.removeAttribute('aria-busy'); scheduleSources(); }
 }
 
-for (const id of ['search', 'region', 'sort', 'boxes', 'map-metric', 'fresh-only', 'source-view']) $(id).addEventListener('input', () => { limit = 24; render(); });
+for (const id of ['search', 'region', 'sort', 'boxes', 'map-metric', 'fresh-only', 'source-view', 'map-view-only']) $(id).addEventListener('input', () => { limit = 24; render(); });
 for (const id of ['heat-overlay', 'road-overlay', 'vector-overlay', 'vector-scale']) $(id).addEventListener('input', renderDetail);
 $('show-analyzed').onclick = () => { $('source-view').checked = false; render(); };
 $('motion-only').onclick = () => { $('source-view').checked = false; $('heat-overlay').checked = false; $('road-overlay').checked = false; $('vector-overlay').checked = true; render(); };

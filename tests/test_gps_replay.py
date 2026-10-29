@@ -73,7 +73,9 @@ class GpsReplayTests(unittest.TestCase):
 
     def test_unexpected_exports_and_camera_ids_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(ValueError, 'evaluation set'):
+            with self.assertRaisesRegex(ValueError, 'tracking set'):
                 fetch_passes({'passes': []}, Path(directory), lambda url: b'', now=NOW)
+            # Both the v1 own-car export and the v2 vehicle tracking export carry passes.
+            self.assertEqual(fetch_passes({'format': 'locaintel-vehicle-track-v2', 'passes': []}, Path(directory), lambda url: b'', now=NOW), [])
             with self.assertRaisesRegex(ValueError, 'camera id'):
                 fetch_passes(export(passed('../238', '2026-10-27T09:00:00.000Z')), Path(directory), lambda url: b'', now=NOW)

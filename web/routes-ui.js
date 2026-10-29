@@ -1,6 +1,8 @@
-/* Vehicle routes widget. Reads the shared local archive and timeline from app.js. */
+/* Vehicle routes panel. Reads the shared local archive and timeline from app.js and
+   draws on the shared map: compass flows on the Facing layer, routes and same-camera
+   tracks on the Routes layer. */
 (function(){
-  const R=VehicleRoutes;let routeMap=null,routeLayer=null,flowLayer=null,cameraLayer=null,trackLayer=null,selectedRoute=null,lastVersion='',featureRunning=false,paintTimer=null,lastRevision=-1;
+  const R=VehicleRoutes;let routeMap=null,routeLayer=null,flowLayer=null,trackLayer=null,selectedRoute=null,lastVersion='',featureRunning=false,paintTimer=null,lastRevision=-1,framed='';
   const thumbs=new Map();
   const confidenceLabel=c=>c>=.6?'high':c>=.35?'medium':'low';
   const time=t=>new Date(t).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
@@ -35,16 +37,14 @@
     $('route-highway').replaceChildren(new Option('All highways',''),...options.map(([h,n])=>new Option(`${/^\d/.test(h)?'Highway '+h:h} · ${n} cameras`,h)));$('route-highway').value=options.some(([h])=>h===current)?current:'';
   }
   function initMap(){
-    if(routeMap||!window.L)return;
-    routeMap=L.map('routes-map',{scrollWheelZoom:false}).setView([49.6,-122.5],7);
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'}).addTo(routeMap);
-    cameraLayer=L.layerGroup().addTo(routeMap);flowLayer=L.layerGroup().addTo(routeMap);trackLayer=L.layerGroup().addTo(routeMap);routeLayer=L.layerGroup().addTo(routeMap);
+    if(routeMap||!window.AppMap?.map)return;
+    routeMap=AppMap.map;flowLayer=AppMap.layer('facing');trackLayer=L.layerGroup().addTo(AppMap.layer('routes'));routeLayer=L.layerGroup().addTo(AppMap.layer('routes'));
   }
   // Short arrow from a camera toward a compass bearing; length grows with vehicle share.
   function arrow(lat,lon,bearing,km,colour,weight){
     const rad=Math.PI/180,dLat=km/111*Math.cos(bearing*rad),dLon=km/(111*Math.cos(lat*rad))*Math.sin(bearing*rad),end=[lat+dLat,lon+dLon];
     const head=(side)=>{const b=bearing+180+side*28,h=km*.35;return [end[0]+h/111*Math.cos(b*rad),end[1]+h/(111*Math.cos(lat*rad))*Math.sin(b*rad)];};
-    return [L.polyline([[lat,lon],end],{color:colour,weight,opacity:.9}),L.polyline([head(-1),end,head(1)],{color:colour,weight,opacity:.9})];
+    return [L.polyline([[lat,lon],end],{pane:'facing',color:colour,weight,opacity:.9}),L.polyline([head(-1),end,head(1)],{pane:'facing',color:colour,weight,opacity:.9})];
   }
   function thumbnail(hop){
     const canvas=node('canvas');canvas.width=64;canvas.height=48;canvas.title=`${hop.camera.name||hop.cameraId} · ${new Date(hop.t).toLocaleString()}`;
@@ -60,39 +60,34 @@
     const rows=[...archiveMetadata.values()].filter(r=>r.observedAt<=end&&r.observedAt>=end-windowMs&&r.detections&&inCorridor(r.camera||byId.get(r.cameraId)));
     const sightings=R.sightings(rows.map(r=>({...r,camera:{...byId.get(r.cameraId),...Object.fromEntries(Object.entries(r.camera||{}).filter(([,v])=>v!=null))}})));
     const found=R.routes(sightings).filter(r=>r.confidence>=minConfidence),flows=R.flows(sightings);
-    const version=signature([end-end%30000,windowMs,minConfidence,$('route-highway').value,$('route-flows').checked,selectedRoute,$('route-candidates').open,sightings.length,rows.filter(r=>r.features).length,found.map(r=>[r.id,r.hops.length]),flows.map(f=>[f.cameraId,f.bins])]);
+    const version=signature([!!routeMap,end-end%30000,windowMs,minConfidence,$('route-highway').value,selectedRoute,$('route-candidates').open,sightings.length,rows.filter(r=>r.features).length,found.map(r=>[r.id,r.hops.length]),flows.map(f=>[f.cameraId,f.bins])]);
     if(version===lastVersion)return;lastVersion=version;
     // Links only count as routes when they clearly beat the decoy (shifted-clock) rate.
     const expected=R.chance(sightings,{}),significant=found.length>=Math.max(2,expected*2+1);
     const headed=sightings.filter(s=>s.heading!=null).length,described=sightings.filter(s=>s.colour).length;
     SmoothUI.list($('route-totals'),[['LINKS',found.length],['BY CHANCE',expected.toFixed(1)],['WITH HEADING',sightings.length?Math.round(headed/sightings.length*100)+'%':'—'],['CAMERAS',new Set(rows.map(r=>r.cameraId)).size]].map(([label,value])=>{const cell=node('div');cell.dataset.key=label;cell.append(node('strong',String(value)),node('span',label));return cell;}));
     if(routeMap){
-      cameraLayer.clearLayers();flowLayer.clearLayers();routeLayer.clearLayers();
-      const points=[];
-      for(const c of corridorCameras()){if(!Number.isFinite(c.lat))continue;points.push([c.lat,c.lon]);L.circleMarker([c.lat,c.lon],{radius:3,color:'#92a2ac',weight:1,fillOpacity:.8}).bindTooltip(c.name).addTo(cameraLayer);}
-      if($('route-flows').checked)for(const f of flows){
+      flowLayer.clearLayers();routeLayer.clearLayers();
+      for(const f of flows){
         for(const [part,colour]of [[f.dominant,'#88e2f2'],[f.secondary,'#5d8fa0']]){if(!part||part.share<.15)continue;for(const layer of arrow(f.lat,f.lon,part.bearing,1.2+part.share*2.5,colour,2+Math.min(5,f.headed*part.share/2)))layer.bindTooltip(`${f.camera.name||f.cameraId}: ${Math.round(part.share*100)}% heading ${part.direction} (${f.headed} vehicles with heading)`).addTo(flowLayer);}
       }
       if(significant||$('route-candidates').open)found.forEach((route,i)=>{
         const age=Math.min(1,(end-route.end)/windowMs),active=selectedRoute===route.id,colour=active?'#ffd36b':`hsl(${95-age*60},70%,${65-age*25}%)`;
-        const line=L.polyline(route.hops.map(h=>[h.lat,h.lon]),{color:colour,weight:active?6:3,opacity:active?1:.85-age*.4,dashArray:route.confidence<.35?'6 6':null}).addTo(routeLayer);
+        const line=L.polyline(route.hops.map(h=>[h.lat,h.lon]),{pane:'routes',color:colour,weight:active?6:3,opacity:active?1:.85-age*.4,dashArray:route.confidence<.35?'6 6':null}).addTo(routeLayer);
         line.bindTooltip(`Route ${i+1}: ${route.colour} ${route.label} heading ${route.heading} · ${time(route.start)}–${time(route.end)}`);line.on('click',()=>{selectedRoute=active?null:route.id;lastVersion='';render();});
-        for(const h of route.hops)L.circleMarker([h.lat,h.lon],{radius:active?6:4,color:colour,fillColor:colour,fillOpacity:1,weight:1}).bindTooltip(`${h.camera.name||h.cameraId} · ${time(h.t)}`).addTo(routeLayer);
+        for(const h of route.hops)L.circleMarker([h.lat,h.lon],{pane:'routes',radius:active?6:4,color:colour,fillColor:colour,fillOpacity:1,weight:1}).bindTooltip(`${h.camera.name||h.cameraId} · ${time(h.t)}`).addTo(routeLayer);
       });
-      const focus=found.find(r=>r.id===selectedRoute);
-      if(focus)routeMap.fitBounds(focus.hops.map(h=>[h.lat,h.lon]),{padding:[40,40],maxZoom:13});
-      else{
-        // Frame the cameras that actually have sightings; fall back to the corridor.
-        const seen=[...new Map(sightings.map(s=>[s.cameraId,[s.lat,s.lon]])).values()],target=seen.length?seen:points,key=$('route-highway').value+':'+seen.length;
-        if(target.length&&$('routes-map').dataset.framed!==key){$('routes-map').dataset.framed=key;routeMap.fitBounds(target,{padding:[40,40],maxZoom:11});}
-      }
+      // The shared map moves only on request: picking a route, or a corridor.
+      const focus=found.find(r=>r.id===selectedRoute),key=focus?'route:'+focus.id:'corridor:'+$('route-highway').value;
+      if(framed!==key){framed=key;if(focus){if(!AppMap.enabled('routes')){$('layer-routes').checked=true;$('layer-routes').dispatchEvent(new Event('change'));}AppMap.frame(focus.hops.map(h=>[h.lat,h.lon]));}
+        else if($('route-highway').value)AppMap.frame(corridorCameras().filter(c=>Number.isFinite(c.lat)).map(c=>[c.lat,c.lon]),{maxZoom:11});}
     }
     const items=found.slice(0,30).map((route,i)=>{
       const item=node('li',undefined,'route-item'+(selectedRoute===route.id?' active':''));item.dataset.key=route.id;
       const button=node('button',undefined,'route-summary');button.type='button';button.setAttribute('aria-pressed',String(selectedRoute===route.id));
       button.append(node('strong',`${i+1}. ${route.colour[0].toUpperCase()+route.colour.slice(1)} ${route.label} → ${route.heading}`),node('span',`${route.hops.length} cameras · ${(route.distance/1000).toFixed(1)} km · ${time(route.start)}–${time(route.end)}${route.speed?` · ~${Math.round(route.speed*3.6)} km/h`:''} · ${confidenceLabel(route.confidence)} match`));
       button.onclick=()=>{selectedRoute=selectedRoute===route.id?null:route.id;lastVersion='';render();};
-      const hops=node('div',undefined,'route-hops');for(const h of route.hops){const hop=node('button',undefined,'route-hop');hop.type='button';hop.title=`Inspect ${h.camera.name||h.cameraId}`;hop.append(thumbnail(h),node('span',`${time(h.t)} · ${h.camera.name||h.cameraId}`));hop.onclick=()=>{selectCamera(h.cameraId);$('detail-pane').scrollIntoView({behavior:'smooth',block:'center'});};hops.append(hop);}
+      const hops=node('div',undefined,'route-hops');for(const h of route.hops){const hop=node('button',undefined,'route-hop');hop.type='button';hop.title=`Inspect ${h.camera.name||h.cameraId}`;hop.append(thumbnail(h),node('span',`${time(h.t)} · ${h.camera.name||h.cameraId}`));hop.onclick=()=>showCamera(h.cameraId);hops.append(hop);}
       item.append(button,hops);return item;
     });
     SmoothUI.list($('route-list'),items.length?items:[Object.assign(node('li',sightings.length?'No cross-camera links in this window.':'No saved sightings for this corridor in the window.','widget-note'),{id:'no-routes'})]);
@@ -125,13 +120,13 @@
       const item=node('li',undefined,'route-item track-item');item.dataset.key=t.id;
       const minutes=Math.max(1,Math.round(t.seconds/60)),title=`${t.camera.name||t.cameraId} · ${t.label} ${t.state==='moving'?'moving '+t.imageDirection+(t.heading?' · heading '+t.heading:''):'waiting / parked'}`;
       const head=node('button',undefined,'route-summary');head.type='button';head.append(node('strong',title),node('span',`${t.hops.length} frames · ${minutes} min · ${time(t.start)}–${time(t.end)}`));
-      head.onclick=()=>{selectCamera(t.cameraId);$('detail-pane').scrollIntoView({behavior:'smooth',block:'center'});};
+      head.onclick=()=>showCamera(t.cameraId);
       const hops=node('div',undefined,'route-hops');for(const h of t.hops){const hop=node('div',undefined,'route-hop');hop.title=new Date(h.t).toLocaleString();hop.append(thumbnail(h),node('span',time(h.t)));hops.append(hop);}
       item.append(head,hops);return item;
     });
     SmoothUI.list($('track-list'),items);
     if(routeMap){trackLayer.clearLayers();const per=new Map();for(const t of found){const c=t.camera;if(!Number.isFinite(c.lat))continue;const e=per.get(t.cameraId)||{c,moving:0,still:0};e[t.state==='moving'?'moving':'still']++;per.set(t.cameraId,e);}
-      for(const {c,moving,still}of per.values())L.circleMarker([c.lat,c.lon],{radius:4+Math.min(10,moving+still),color:'#c3a1ff',weight:2,fillOpacity:.25}).bindTooltip(`${c.name}: ${moving} moving, ${still} waiting/parked vehicle tracks`).addTo(trackLayer);}
+      for(const {c,moving,still}of per.values())L.circleMarker([c.lat,c.lon],{pane:'routes',radius:4+Math.min(10,moving+still),color:'#c3a1ff',weight:2,fillOpacity:.25}).bindTooltip(`${c.name}: ${moving} moving, ${still} waiting/parked vehicle tracks`).addTo(trackLayer);}
     return found;
   }
   // Camera-to-camera routes: handoffs between views of one site (captured seconds
@@ -145,14 +140,14 @@
       const item=node('li',undefined,'route-item journey-item');item.dataset.key=j.id;
       const names=j.cameras.map(id=>j.hops.find(h=>h.cameraId===id).camera.name||id),secs=Math.round(j.seconds);
       item.append(node('strong',`${j.colour?j.colour[0].toUpperCase()+j.colour.slice(1)+' ':''}${j.label}${j.heading?' heading '+j.heading:''}`),node('span',`${names.join(' → ')} · ${j.hops.length} sightings · ${secs<120?secs+' s':Math.round(secs/60)+' min'} · ${time(j.start)}–${time(j.end)}`));
-      const hops=node('div',undefined,'route-hops');for(const h of j.hops){const hop=node('button',undefined,'route-hop');hop.type='button';hop.title=`Inspect ${h.camera.name||h.cameraId}`;hop.append(thumbnail(h),node('span',`${new Date(h.t).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})} · ${h.camera.name||h.cameraId}`));hop.onclick=()=>{selectCamera(h.cameraId);$('detail-pane').scrollIntoView({behavior:'smooth',block:'center'});};hops.append(hop);}
+      const hops=node('div',undefined,'route-hops');for(const h of j.hops){const hop=node('button',undefined,'route-hop');hop.type='button';hop.title=`Inspect ${h.camera.name||h.cameraId}`;hop.append(thumbnail(h),node('span',`${new Date(h.t).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})} · ${h.camera.name||h.cameraId}`));hop.onclick=()=>showCamera(h.cameraId);hops.append(hop);}
       item.append(hops);return item;
     });
     SmoothUI.list($('journey-list'),items);
-    if(routeMap)for(const j of list){const c=j.hops[0].camera;if(Number.isFinite(c.lat))L.circleMarker([c.lat,c.lon],{radius:9,color:trusted?'#ffd36b':'#8c7633',weight:3,fillOpacity:.15}).bindTooltip(`${j.cameras.length}-camera route · ${j.hops.length} sightings`).addTo(routeLayer);}
+    if(routeMap)for(const j of list){const c=j.hops[0].camera;if(Number.isFinite(c.lat))L.circleMarker([c.lat,c.lon],{pane:'routes',radius:9,color:trusted?'#ffd36b':'#8c7633',weight:3,fillOpacity:.15}).bindTooltip(`${j.cameras.length}-camera route · ${j.hops.length} sightings`).addTo(routeLayer);}
   }
   function schedule(){clearTimeout(paintTimer);paintTimer=setTimeout(render,250);}
-  for(const id of ['route-window','route-confidence','route-flows'])$(id).addEventListener('input',schedule);
+  for(const id of ['route-window','route-confidence'])$(id).addEventListener('input',schedule);
   $('route-candidates').addEventListener('toggle',()=>{lastVersion='';schedule();});
   $('route-highway').addEventListener('change',()=>{selectedRoute=null;limit=24;window.render?.();schedule();});
   setInterval(()=>{computeFeatures();if(archiveRevision!==lastRevision||!isLive()){lastRevision=archiveRevision;schedule();}},Math.max(1500,powerProfile.paintMs*10));

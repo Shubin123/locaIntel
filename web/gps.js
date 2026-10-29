@@ -1,15 +1,16 @@
-/* Own-vehicle GPS log for a tracking evaluation set. Logging runs only between an
-   explicit Start and Stop on this device; fixes stay in IndexedDB until exported.
-   Fixes matched to saved camera frames (by upstream capture time) say which frames
-   should contain your car, so you can label it. */
+/* GPS storage and logging for vehicle tracking. Logging runs only between an explicit
+   Start and Stop on this device. Fixes pass through VehicleMatcher's relevance
+   filter, so only positions near a DriveBC camera are stored, and they stay in
+   IndexedDB until exported. Every drive and label belongs to a vehicle profile, so
+   any number of vehicles can be followed, each from its own GPS track. */
 (function(root){
-  const {lookBearing,distance,bearing,captured}=root.VehicleRoutes;
-  const DAY=86400000,VEHICLES=['car','truck','bus','motorcycle'];
-  const wrap=a=>((a%360)+360)%360,diff=(a,b)=>Math.abs(((a-b+540)%360)-180);
+  const M=root.VehicleMatcher,{distance}=root.VehicleRoutes;
+  const DEFAULT_VEHICLE='vehicle-1';
   const finite=v=>v==null||v===''?null:Number.isFinite(Number(v))?Number(v):null;
   const iso=t=>new Date(t).toISOString();
   const request=r=>new Promise((resolve,reject)=>{r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});
   const complete=tx=>new Promise((resolve,reject)=>{tx.oncomplete=resolve;tx.onabort=tx.onerror=()=>reject(tx.error||Error('GPS storage transaction failed'));});
+  const vehicle=(id=DEFAULT_VEHICLE,fields={})=>({id,name:'My vehicle',bodyType:'',colour:'',references:[],created:Date.now(),...fields});
 
   function validFix(fix){return fix&&Number.isFinite(fix.t)&&Number.isFinite(fix.lat)&&Number.isFinite(fix.lon)&&Math.abs(fix.lat)<=90&&Math.abs(fix.lon)<=180?fix:null;}
   // A GeolocationPosition as a plain record. Heading is NaN while stationary.
@@ -24,14 +25,34 @@
       if(this.dbPromise)return this.dbPromise;
       this.dbPromise=new Promise((resolve,reject)=>{
         if(!this.indexedDB){reject(Error('Browser storage is unavailable'));return;}
-        const r=this.indexedDB.open(this.name,1);
-        r.onupgradeneeded=()=>{const db=r.result;db.createObjectStore('sessions',{keyPath:'id'});db.createObjectStore('fixes',{keyPath:['session','t']});db.createObjectStore('labels',{keyPath:'key'});};
+        const r=this.indexedDB.open(this.name,2);
+        r.onupgradeneeded=event=>{
+          const db=r.result,tx=r.transaction;
+          if(event.oldVersion<1){db.createObjectStore('sessions',{keyPath:'id'});db.createObjectStore('fixes',{keyPath:['session','t']});db.createObjectStore('labels',{keyPath:'key'});}
+          if(event.oldVersion<2){
+            // Version 1 followed one own vehicle: its drives and labels move to the first profile.
+            const vehicles=db.createObjectStore('vehicles',{keyPath:'id'}),sessions=tx.objectStore('sessions'),labels=tx.objectStore('labels');
+            vehicles.put(vehicle());
+            sessions.getAll().onsuccess=e=>{for(const s of e.target.result)if(!s.vehicle)sessions.put({...s,vehicle:DEFAULT_VEHICLE});};
+            labels.getAll().onsuccess=e=>{for(const l of e.target.result)if(!l.vehicle){labels.delete(l.key);labels.put({...l,vehicle:DEFAULT_VEHICLE,frame:l.key,key:DEFAULT_VEHICLE+'|'+l.key});}};
+          }
+        };
         r.onerror=()=>reject(r.error);r.onblocked=()=>reject(Error('Close another app tab to update GPS storage'));
         r.onsuccess=()=>{const db=r.result;db.onversionchange=()=>db.close();resolve(db);};
       });return this.dbPromise;
     }
     enqueue(fn){const result=this.chain.then(fn);this.chain=result.catch(()=>{});return result;}
     range(id){return this.IDBKeyRange.bound([id,-Infinity],[id,Infinity]);}
+    async vehicles(){await this.chain;const db=await this.open();return (await request(db.transaction('vehicles','readonly').objectStore('vehicles').getAll())).sort((a,b)=>(a.created||0)-(b.created||0));}
+    saveVehicle(v){return this.enqueue(async()=>{const db=await this.open(),tx=db.transaction('vehicles','readwrite'),done=complete(tx);tx.objectStore('vehicles').put(v);await done;return v;});}
+    // Deleting a vehicle deletes its drives, their fixes and its labels.
+    removeVehicle(id){return this.enqueue(async()=>{
+      const db=await this.open(),tx=db.transaction(['vehicles','sessions','fixes','labels'],'readwrite'),done=complete(tx),sessions=tx.objectStore('sessions'),labels=tx.objectStore('labels');
+      tx.objectStore('vehicles').delete(id);
+      for(const s of await request(sessions.getAll()))if(s.vehicle===id){sessions.delete(s.id);tx.objectStore('fixes').delete(this.range(s.id));}
+      for(const l of await request(labels.getAll()))if(l.vehicle===id)labels.delete(l.key);
+      await done;
+    });}
     begin(session){return this.enqueue(async()=>{const db=await this.open(),tx=db.transaction('sessions','readwrite'),done=complete(tx);tx.objectStore('sessions').put(session);await done;return session;});}
     add(fix){return this.enqueue(async()=>{
       const db=await this.open(),tx=db.transaction(['sessions','fixes'],'readwrite'),done=complete(tx),fixes=tx.objectStore('fixes'),sessions=tx.objectStore('sessions');
@@ -40,15 +61,22 @@
       await done;return existing===undefined;
     });}
     // Imported tracks keep their session ids, so importing the same file twice adds nothing.
-    importFixes(list,{name}={}){return this.enqueue(async()=>{
+    importFixes(list,{name,vehicle:owner=DEFAULT_VEHICLE}={}){return this.enqueue(async()=>{
       const db=await this.open(),tx=db.transaction(['sessions','fixes'],'readwrite'),done=complete(tx),fixes=tx.objectStore('fixes'),sessions=tx.objectStore('sessions'),ids=[...new Set(list.map(f=>f.session))];
       for(const fix of list)fixes.put(fix);
       for(const id of ids){
         const all=await request(fixes.getAll(this.range(id))),previous=await request(sessions.get(id));
         const end=previous&&previous.end==null?null:Math.max(previous?.end??-Infinity,all.at(-1).t);
-        sessions.put({...previous,id,name:previous?.name||name||id,imported:previous?previous.imported:true,start:Math.min(previous?.start??Infinity,all[0].t),end,last:all.at(-1).t,fixes:all.length});
+        sessions.put({...previous,id,vehicle:previous?.vehicle||owner,name:previous?.name||name||id,imported:previous?previous.imported:true,start:Math.min(previous?.start??Infinity,all[0].t),end,last:all.at(-1).t,fixes:all.length});
       }
       await done;return ids;
+    });}
+    // Replace a drive's fixes with the given subset (dropping positions away from cameras).
+    trim(id,keep){return this.enqueue(async()=>{
+      const db=await this.open(),tx=db.transaction(['sessions','fixes'],'readwrite'),done=complete(tx),fixes=tx.objectStore('fixes'),sessions=tx.objectStore('sessions');
+      fixes.delete(this.range(id));for(const f of keep)fixes.put(f);
+      const s=await request(sessions.get(id));if(s){s.fixes=keep.length;s.last=keep.at(-1)?.t??s.last;s.trimmed=true;sessions.put(s);}
+      await done;return keep.length;
     });}
     finish(id,end){return this.enqueue(async()=>{const db=await this.open(),tx=db.transaction('sessions','readwrite'),done=complete(tx),store=tx.objectStore('sessions'),s=await request(store.get(id));if(s){s.end=end;store.put(s);}await done;return s;});}
     // A page closed mid-drive leaves an open session; it ends at its last fix.
@@ -72,21 +100,22 @@
 
   // Phones pause background tabs, so a screen wake lock keeps the page (and its
   // watchPosition) running. The lock drops whenever the page is hidden and is
-  // requested again when it returns.
+  // requested again when it returns. With a filter, only the fixes it keeps are
+  // stored; `seen` counts every fix, `fixes` the stored ones.
   class GpsLogger{
-    constructor({store,geolocation=root.navigator?.geolocation,wakeLock=root.navigator?.wakeLock,document=root.document,intervalMs=3000,now=()=>Date.now(),setTimer=(fn,ms)=>setInterval(fn,ms),clearTimer=id=>clearInterval(id),onChange=()=>{}}={}){
-      Object.assign(this,{store,geolocation,wakeLock,document,intervalMs,now,setTimer,clearTimer,onChange});
-      this.session=null;this.watch=null;this.timer=null;this.sentinel=null;this.locking=null;this.last=null;this.lastSeen=0;this.fixes=0;this.error='';this.wake=wakeLock?'idle':'unsupported';
+    constructor({store,geolocation=root.navigator?.geolocation,wakeLock=root.navigator?.wakeLock,document=root.document,intervalMs=3000,filter=()=>null,now=()=>Date.now(),setTimer=(fn,ms)=>setInterval(fn,ms),clearTimer=id=>clearInterval(id),onChange=()=>{}}={}){
+      Object.assign(this,{store,geolocation,wakeLock,document,intervalMs,makeFilter:filter,now,setTimer,clearTimer,onChange});
+      this.session=null;this.filter=null;this.watch=null;this.timer=null;this.sentinel=null;this.locking=null;this.last=null;this.lastSeen=0;this.seen=0;this.fixes=0;this.error='';this.wake=wakeLock?'idle':'unsupported';
       this.visibility=()=>{if(this.session&&this.document?.visibilityState==='visible')this.lock();};
     }
     get active(){return !!this.session;}
-    state(){return {active:this.active,session:this.session,fixes:this.fixes,last:this.last,wakeLock:this.wake,error:this.error};}
+    state(){return {active:this.active,session:this.session,seen:this.seen,fixes:this.fixes,last:this.last,wakeLock:this.wake,error:this.error};}
     changed(){try{this.onChange(this.state());}catch(_){}}
-    async start(){
+    async start({vehicle:owner=DEFAULT_VEHICLE}={}){
       if(this.session)return this.session;
       if(!this.geolocation)throw Error('This browser has no location access');
-      const start=this.now(),session={id:'drive-'+iso(start).replace(/[-:]/g,'').replace(/\.\d+/,''),start,end:null,last:null,fixes:0};
-      Object.assign(this,{session,last:null,lastSeen:start,fixes:0,error:''});
+      const start=this.now(),session={id:'drive-'+iso(start).replace(/[-:]/g,'').replace(/\.\d+/,''),vehicle:owner,start,end:null,last:null,fixes:0};
+      Object.assign(this,{session,filter:this.makeFilter(),last:null,lastSeen:start,seen:0,fixes:0,error:''});
       // Store writes are queued in order, so fixes saved later land after the session record.
       const begun=this.store.begin(session),options={enableHighAccuracy:true,maximumAge:0,timeout:30000};
       // Ask for location (and the screen lock) before any await, inside the tap that called start,
@@ -118,116 +147,52 @@
       const fix=fromPosition(position,session.id);if(!fix)return null;
       this.lastSeen=this.now();
       if(this.last&&fix.t-this.last.t<this.intervalMs)return null;
-      this.last=fix;this.fixes++;this.error='';
-      this.store.add(fix).catch(error=>{this.error='Fix not saved: '+error.message;this.changed();});
+      this.last=fix;this.seen++;this.error='';
+      for(const kept of this.filter?this.filter.push(fix):[fix]){this.fixes++;this.store.add(kept).catch(error=>{this.error='Fix not saved: '+error.message;this.changed();});}
       this.changed();return fix;
     }
     failed(error){
       // PERMISSION_DENIED ends the session; timeouts and lost signal keep watching.
       this.error=error?.code===1?'Location permission denied':error?.code===3?'Waiting for a GPS fix…':'Location unavailable: '+(error?.message||'unknown error');
-      // A drive refused before its first fix is not kept as an empty session.
-      if(error?.code===1)return this.stop({discard:!this.fixes});this.changed();
+      if(error?.code===1)return this.stop();this.changed();
     }
     halt(){
-      this.session=null;this.geolocation.clearWatch(this.watch);this.watch=null;this.clearTimer(this.timer);this.timer=null;
+      this.session=null;this.filter=null;this.geolocation.clearWatch(this.watch);this.watch=null;this.clearTimer(this.timer);this.timer=null;
       this.document?.removeEventListener?.('visibilitychange',this.visibility);
       const sentinel=this.sentinel;this.sentinel=null;this.wake=this.wakeLock?'idle':'unsupported';
       return Promise.resolve(sentinel?.release()).catch(()=>{});
     }
-    async stop({discard=false}={}){
+    // A drive that never came near a camera stored nothing, so it is not kept as an empty session.
+    async stop({discard=!this.fixes}={}){
       const session=this.session;if(!session)return null;
       await this.halt();
       const ended=discard?await this.store.remove(session.id).then(()=>null):await this.store.finish(session.id,this.now());this.changed();return ended;
     }
   }
 
-  // Interpolated position at time t. Gaps over maxGap are not bridged: a stop at
-  // the edge of a tunnel is not evidence of where the car was in between.
-  const defaults={radius:250,fov:70,near:40,maxGap:30000,edge:5000,maxAccuracy:50,minMove:3};
-  const usable=(fixes,o)=>fixes.filter(f=>f.accuracy==null||f.accuracy<=o.maxAccuracy).sort((a,b)=>a.t-b.t);
-  function course(a,b,o){return a&&b&&distance(a,b)>=o.minMove?bearing(a,b):null;}
-  function positionAt(list,t,options={}){
-    const o={...defaults,...options};let lo=0,hi=list.length;
-    while(lo<hi){const m=lo+hi>>1;if(list[m].t<t)lo=m+1;else hi=m;}
-    const a=list[lo-1],b=list[lo];
-    if(a&&b&&b.t-a.t<=o.maxGap){
-      const k=(t-a.t)/(b.t-a.t),moved=distance(a,b),c=course(a,b,o);
-      return {t,lat:a.lat+(b.lat-a.lat)*k,lon:a.lon+(b.lon-a.lon)*k,accuracy:Math.max(a.accuracy??0,b.accuracy??0)||null,course:c??a.heading??b.heading??null,speed:moved/Math.max(.001,(b.t-a.t)/1000),gap:b.t-a.t,session:a.session};
-    }
-    const f=[a,b].filter(Boolean).sort((x,y)=>Math.abs(x.t-t)-Math.abs(y.t-t))[0];
-    if(!f||Math.abs(f.t-t)>o.edge)return null;
-    return {t,lat:f.lat,lon:f.lon,accuracy:f.accuracy,course:f.heading,speed:f.speed,gap:Math.abs(f.t-t),session:f.session};
+  // One label per vehicle and frame; detection null means the vehicle is not visible.
+  // Its index matches VehicleRoutes.sightings keys (frame key + ':' + index), and the
+  // colour descriptor is kept so the label stays a reference after the photo is pruned.
+  function labelRecord(frame,row,index,{vehicle:owner=DEFAULT_VEHICLE,descriptor=null,labeledAt=Date.now()}={}){
+    const d=index==null?null:row.detections?.[index];if(index!=null&&!M.VEHICLES.includes(d?.label))throw Error('Not a vehicle detection');
+    const p=frame.position||{};
+    return {key:owner+'|'+frame.key,vehicle:owner,frame:frame.key,cameraId:frame.cameraId,hash:frame.hash,capturedAt:frame.t,exactTime:!!frame.exact,session:p.session??frame.session??null,detection:index==null?null:index,sighting:index==null?null:frame.key+':'+index,label:d?.label||null,box:d?.box||null,
+      descriptor:index==null?null:descriptor,modelFacing:index==null?null:row.facing?.byDetection?.[index]?.facing||null,expectedFacing:frame.expectedFacing??null,distance:frame.distance??null,offAxis:frame.offAxis??null,
+      gps:{lat:p.lat??null,lon:p.lon??null,accuracy:p.accuracy??null,course:p.course??null,speed:p.speed??null,gap:p.gap??null},labeledAt};
   }
-  // Where the car is relative to the camera's view. Without a look direction we
-  // cannot tell whether it is in front of or behind the camera.
-  function view(camera,p,o){
-    const d=distance(camera,p),look=lookBearing(camera),offAxis=look==null?null:diff(look,bearing(camera,p));
-    return {distance:d,look,offAxis,inView:look==null?null:d<=o.near||offAxis<=o.fov};
-  }
-  // Travelling the way the camera looks shows the car's rear, i.e. away_from_camera.
-  function expectedFacing(look,travel){
-    if(look==null||travel==null)return null;const r=wrap(travel-look);
-    return r<45||r>=315?'away_from_camera':r<135?'image_right':r<225?'toward_camera':'image_left';
-  }
-  // Saved frames whose upstream capture time puts your car in front of the camera.
-  // Fetch times can trail a capture by minutes, so frames without one are skipped.
-  function frames(rows,fixes,options={}){
-    const o={...defaults,...options},list=usable(fixes,o),out=[];if(!list.length)return out;
-    const first=list[0].t-o.edge,last=list.at(-1).t+o.edge;
-    for(const row of rows){
-      const camera=row.camera||{},t=captured(row);
-      if(!Number.isFinite(camera.lat)||!Number.isFinite(camera.lon)||t!==Date.parse(row.sourceModified||'')||t<first||t>last)continue;
-      const p=positionAt(list,t,o);if(!p)continue;
-      const v=view(camera,p,o);if(v.distance>o.radius||v.inView===false)continue;
-      out.push({key:row.key,cameraId:String(row.cameraId),hash:row.hash,camera,t,position:p,...v,expectedFacing:expectedFacing(v.look,p.course)});
-    }
-    return out.sort((a,b)=>b.t-a.t);
-  }
-  // Every catalog camera the drive passed in view of, for DriveBC's Replay the Day
-  // (about 24 hours of images) when no frame was saved locally.
-  function passes(cameras,fixes,options={}){
-    const o={...defaults,...options},list=usable(fixes,o),out=[];if(!list.length)return out;
-    let south=90,north=-90,west=180,east=-180;for(const f of list){south=Math.min(south,f.lat);north=Math.max(north,f.lat);west=Math.min(west,f.lon);east=Math.max(east,f.lon);}
-    const padLat=o.radius/111320,padLon=o.radius/(111320*Math.max(.05,Math.cos((south+north)/2*Math.PI/180)));
-    for(const camera of cameras){
-      if(!Number.isFinite(camera.lat)||!Number.isFinite(camera.lon)||camera.lat<south-padLat||camera.lat>north+padLat||camera.lon<west-padLon||camera.lon>east+padLon)continue;
-      let visit=null;const close=()=>{if(visit)out.push(visit);visit=null;};
-      for(let i=0;i<list.length;i++){
-        const f=list[i],v=view(camera,f,o);if(v.distance>o.radius||v.inView===false)continue;
-        if(visit&&f.t-visit.end>o.maxGap)close();
-        if(!visit)visit={cameraId:String(camera.id),camera,start:f.t,end:f.t,fixes:0,closest:null,session:f.session};
-        visit.end=f.t;visit.fixes++;
-        if(!visit.closest||v.distance<visit.closest.distance){
-          const prev=list[i-1]?.t>=f.t-o.maxGap?list[i-1]:null,next=list[i+1]?.t<=f.t+o.maxGap?list[i+1]:null;
-          visit.closest={t:f.t,lat:f.lat,lon:f.lon,accuracy:f.accuracy,distance:v.distance,offAxis:v.offAxis,course:course(prev||f,next||f,o)??f.heading};
-        }
-      }
-      close();
-    }
-    for(const p of out)Object.assign(p,{expectedFacing:expectedFacing(lookBearing(p.camera),p.closest.course),replay:replay(p.camera,p.start)});
-    return out.sort((a,b)=>a.start-b.start);
-  }
-  function replay(camera,start){
-    const id=encodeURIComponent(String(camera.id));
-    return {page:camera.source||`https://www.drivebc.ca/cameras/${id}`,list:`https://www.drivebc.ca/api/webcams/${id}/replayTheDay/`,availableUntil:start+DAY};
-  }
-  // One own-car label per frame; detection null means the car is not visible.
-  // Its index matches VehicleRoutes.sightings keys (frame key + ':' + index).
-  function labelRecord(match,row,index,labeledAt=Date.now()){
-    const d=index==null?null:row.detections?.[index];if(index!=null&&!VEHICLES.includes(d?.label))throw Error('Not a vehicle detection');
-    const p=match.position;
-    return {key:match.key,cameraId:match.cameraId,hash:match.hash,capturedAt:match.t,session:p.session,detection:index==null?null:index,sighting:index==null?null:match.key+':'+index,label:d?.label||null,box:d?.box||null,
-      modelFacing:index==null?null:row.facing?.byDetection?.[index]?.facing||null,expectedFacing:match.expectedFacing,distance:match.distance,offAxis:match.offAxis,
-      gps:{lat:p.lat,lon:p.lon,accuracy:p.accuracy,course:p.course,speed:p.speed,gap:p.gap},labeledAt};
-  }
-  function evaluationSet({sessions=[],labels=[],frames:candidates=[],passes:passed=[],generated=Date.now()}){
-    const labeled=new Set(labels.map(l=>l.key)),round=v=>v==null?null:Math.round(v*10)/10;
-    return {format:'locaintel-own-vehicle-v1',generated:iso(generated),
-      description:'Own-vehicle labels from a GPS log matched to DriveBC frames by upstream capture time. detection null = car not visible. sighting joins VehicleRoutes.sightings keys.',
-      sessions:sessions.map(s=>({id:s.id,name:s.name||null,start:iso(s.start),end:s.end==null?null:iso(s.end),fixes:s.fixes||0,interrupted:!!s.interrupted})),
-      labels:labels.slice().sort((a,b)=>a.capturedAt-b.capturedAt).map(l=>({...l,capturedAt:iso(l.capturedAt),labeledAt:iso(l.labeledAt)})),
-      unlabeled:candidates.filter(m=>!labeled.has(m.key)).map(m=>({key:m.key,cameraId:m.cameraId,hash:m.hash,capturedAt:iso(m.t),distance:round(m.distance),expectedFacing:m.expectedFacing})),
-      passes:passed.map(p=>({cameraId:p.cameraId,name:p.camera.name||null,session:p.session,start:iso(p.start),end:iso(p.end),closest:{time:iso(p.closest.t),distance:round(p.closest.distance),course:round(p.closest.course),lat:p.closest.lat,lon:p.closest.lon},expectedFacing:p.expectedFacing,replay:{...p.replay,availableUntil:iso(p.replay.availableUntil)}}))};
+  // passes keep the v1 shape, so pipeline.gps_replay reads either format.
+  function exportSet({vehicle:v,sessions=[],labels=[],result,generated=Date.now()}){
+    const round=v=>v==null?null:Math.round(v*10)/10,score=v=>v==null?null:Math.round(v*1000)/1000,own=labels.filter(l=>l.vehicle===v.id),labeled=new Set(own.map(l=>l.frame));
+    return {format:'locaintel-vehicle-track-v2',generated:iso(generated),
+      description:'One vehicle followed through DriveBC cameras from its GPS track. Only fixes near cameras are stored. detection null = vehicle not visible. sighting joins VehicleRoutes.sightings keys.',
+      vehicle:{id:v.id,name:v.name||null,bodyType:v.bodyType||null,colour:v.colour||null,references:(v.references||[]).map(r=>({source:'photo',descriptor:r.descriptor}))},
+      relevance:{radiusMetres:M.RELEVANT_RADIUS,rule:'fixes within the radius of a camera, plus one boundary fix each side within 30 s'},
+      sessions:sessions.filter(s=>s.vehicle===v.id).map(s=>({id:s.id,name:s.name||null,start:iso(s.start),end:s.end==null?null:iso(s.end),fixes:s.fixes||0,interrupted:!!s.interrupted,trimmed:!!s.trimmed})),
+      sightings:(result?.sightings||[]).map(s=>({key:s.key,cameraId:s.cameraId,name:s.camera.name||null,capturedAt:iso(s.t),exactTime:s.exact,status:s.status,confidence:score(s.verification.confidence),margin:score(s.verification.margin),detection:s.detection,box:s.box,distance:round(s.distance),expectedFacing:s.expectedFacing,cues:s.detection==null?null:s.verification.detections.find(d=>d.index===s.detection)?.cues||null})),
+      labels:own.slice().sort((a,b)=>a.capturedAt-b.capturedAt).map(l=>({...l,capturedAt:iso(l.capturedAt),labeledAt:iso(l.labeledAt)})),
+      unlabeled:(result?.sightings||[]).filter(s=>!labeled.has(s.key)).map(s=>({key:s.key,cameraId:s.cameraId,hash:s.hash,capturedAt:iso(s.t),distance:round(s.distance),expectedFacing:s.expectedFacing})),
+      passes:(result?.passes||[]).map(p=>({cameraId:p.cameraId,name:p.camera.name||null,session:p.session,start:iso(p.start),end:iso(p.end),closest:{time:iso(p.closest.t),distance:round(p.closest.distance),course:round(p.closest.course),lat:p.closest.lat,lon:p.closest.lon},expectedFacing:p.expectedFacing,status:p.status,frames:p.frames.length,replay:{...p.replay,availableUntil:iso(p.replay.availableUntil)}})),
+      checks:{decoy:result?.decoy||null,agreement:result?.agreement||null}};
   }
 
   const xml=s=>String(s).replace(/[<>&'"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;'}[c]));
@@ -280,7 +245,8 @@
     if(!fixes.length)throw Error('No timestamped positions found in '+name);
     return fixes;
   }
-  function trackLength(fixes){let m=0;for(let i=1;i<fixes.length;i++)if(fixes[i].session===fixes[i-1].session)m+=distance(fixes[i-1],fixes[i]);return m;}
+  // Stored tracks are pieces near cameras, so only consecutive fixes within a minute count toward length.
+  function trackLength(fixes){let m=0;for(let i=1;i<fixes.length;i++)if(fixes[i].session===fixes[i-1].session&&fixes[i].t-fixes[i-1].t<=60000)m+=distance(fixes[i-1],fixes[i]);return m;}
 
-  root.GpsLog={DAY,VEHICLES,defaults,fromPosition,GpsStore,GpsLogger,positionAt,expectedFacing,frames,passes,labelRecord,evaluationSet,gpx,csv,parseCSV,parseGPX,parseTrack,trackLength};
+  root.GpsLog={DEFAULT_VEHICLE,vehicle,fromPosition,GpsStore,GpsLogger,labelRecord,exportSet,gpx,csv,parseCSV,parseGPX,parseTrack,trackLength};
 })(globalThis);

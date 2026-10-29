@@ -2,10 +2,11 @@
 
 DriveBC keeps about 24 hours of images per camera. Browsers cannot read the
 replay listing (it sends no CORS header), so this local helper does. For each
-pass in the JSON exported by the web app's GPS drive log, it saves the replay
-frames captured during the pass, plus the nearest one on each side within the
-window, to .cache/gps-replay/<camera>/<UTC stamp>.jpg with a manifest.json.
-Frames flagged car_expected were captured while your car was in view.
+pass in the JSON exported by the web app's vehicle tracking panel, it saves the
+replay frames captured during the pass, plus the nearest one on each side within
+the window, to .cache/gps-replay/<camera>/<UTC stamp>.jpg with a manifest.json.
+Frames flagged car_expected were captured while the vehicle was in view. Import
+the output folder in the web app with "Import replay frames" to verify them there.
 """
 import argparse
 import json
@@ -18,7 +19,8 @@ from urllib.request import Request, urlopen
 LISTING = 'https://www.drivebc.ca/api/webcams/{id}/replayTheDay/'
 IMAGE = 'https://www.drivebc.ca/images/replaytheday/{id}/{stamp}.jpg'
 RETENTION = timedelta(hours=24)
-FORMAT = 'locaintel-own-vehicle-v1'
+# v1: the original own-car evaluation set; v2: any vehicle profile. Both carry passes.
+FORMATS = ('locaintel-own-vehicle-v1', 'locaintel-vehicle-track-v2')
 
 
 def moment(value):
@@ -50,8 +52,8 @@ def default_fetch(url):
 
 
 def fetch_passes(export, output=Path('.cache/gps-replay'), fetch=default_fetch, now=None, window=timedelta(seconds=60)):
-    if not isinstance(export, dict) or export.get('format') != FORMAT or not isinstance(export.get('passes'), list):
-        raise ValueError('Expected an evaluation set exported by the GPS drive log')
+    if not isinstance(export, dict) or export.get('format') not in FORMATS or not isinstance(export.get('passes'), list):
+        raise ValueError('Expected a tracking set exported by the vehicle tracking panel')
     now = now or datetime.now(timezone.utc)
     output = Path(output)
     listings, manifest = {}, []
@@ -92,7 +94,7 @@ def fetch_passes(export, output=Path('.cache/gps-replay'), fetch=default_fetch, 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('export', type=Path, help='locaintel-own-vehicle-*.json from the GPS drive log')
+    parser.add_argument('export', type=Path, help='tracking set JSON exported by the vehicle tracking panel')
     parser.add_argument('--output', type=Path, default=Path('.cache/gps-replay'))
     parser.add_argument('--window-seconds', type=float, default=60, help='also keep the nearest frame this far before/after each pass')
     args = parser.parse_args()
